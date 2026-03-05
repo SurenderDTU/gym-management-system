@@ -1,0 +1,20 @@
+/* No @tailwind rules here - we are using the CDN in index.html instead */
+body {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+@keyframes whatsapp-pop-in {
+  0% { transform: scale(0.5); opacity: 0; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+@keyframes whatsapp-pop-out {
+  0% { transform: scale(1); opacity: 1; }
+  100% { transform: scale(0.5); opacity: 0; }
+}
+
+.animate-whatsapp-in {
+  animation: whatsapp-pop-in 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+}
