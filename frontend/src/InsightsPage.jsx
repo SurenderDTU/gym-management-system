@@ -213,7 +213,7 @@ const InsightsPage = ({ token }) => {
     };
   }, [members, attendanceSummary, dateRange]);
 
-  if (loading) return <div className="flex h-screen items-center justify-center text-slate-400 font-bold animate-pulse">Loading Business Intelligence...</div>;
+  if (loading) return <div className="flex min-h-[100dvh] items-center justify-center text-slate-400 font-bold animate-pulse">Loading Business Intelligence...</div>;
   if (!analytics) return <div className="p-10 text-center text-slate-500 font-bold">No Data Available. Add members to see insights.</div>;
 
   return (

@@ -708,7 +708,7 @@ const apiOrigin = (import.meta.env.VITE_API_URL || 'http://localhost:5000').trim
   if (isLoading) return <div className="p-10 text-center font-bold text-slate-400 animate-pulse">Loading Configurations...</div>;
 
   return (
-    <div className="flex flex-col md:flex-row gap-6 h-[calc(100vh-100px)]">
+    <div className="flex flex-col md:flex-row gap-6 md:h-[calc(100vh-100px)]">
       
       {/* SIDEBAR NAVIGATION */}
       <div className="w-full md:w-64 flex-shrink-0 flex flex-col gap-6 overflow-y-auto pr-2 custom-scrollbar pb-10">

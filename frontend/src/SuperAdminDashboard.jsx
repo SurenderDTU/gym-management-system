@@ -507,7 +507,7 @@ function SuperAdminDashboard({ token, onLogout }) {
   };
 
   if (loading) {
-    return <div className="h-screen flex items-center justify-center bg-[#050505] text-rose-500 font-black tracking-widest">LOADING HQ...</div>;
+    return <div className="min-h-[100dvh] flex items-center justify-center bg-[#050505] text-rose-500 font-black tracking-widest">LOADING HQ...</div>;
   }
 
   const stats = overview.stats || {};

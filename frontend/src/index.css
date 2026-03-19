@@ -26,22 +26,9 @@ body {
   min-height: 100vh;
 }
 
-@media (min-width: 1024px) {
-  html,
-  body {
-    overflow-x: hidden;
-  }
-
-  body {
-    zoom: 0.9;
-  }
-
-  .h-screen {
-    height: calc(100vh / 0.9) !important;
-  }
-
-  .min-h-screen {
-    min-height: calc(100vh / 0.9) !important;
+@media (min-width: 1280px) {
+  html {
+    font-size: 15px;
   }
 }
 

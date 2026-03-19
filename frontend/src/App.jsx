@@ -585,7 +585,7 @@ function App() {
 
 
       <div
-        className="flex min-h-screen font-['Inter'] antialiased text-slate-900"
+        className="flex min-h-[100dvh] font-['Inter'] antialiased text-slate-900"
         style={{
           background: `
             radial-gradient(ellipse at 18% 18%, rgba(99,102,241,0.09) 0%, transparent 55%),
@@ -668,7 +668,7 @@ function App() {
           </div>
         </aside>
 
-        <div className="flex-1 flex flex-col h-screen overflow-hidden">
+        <div className="flex-1 flex flex-col min-h-[100dvh] md:h-screen overflow-hidden">
           <header className="relative z-50 h-16 flex items-center justify-between px-4 md:px-8 shrink-0 border-b bg-white/70 backdrop-blur-3xl">
             <div className="flex items-center gap-2">
               <span className="text-sm font-semibold text-slate-400">Home</span>

@@ -290,7 +290,7 @@ function HelpSupportPage({ token, toast }) {
   }
 
   return (
-    <div className="space-y-5 h-[calc(100vh-120px)] overflow-hidden flex flex-col">
+    <div className="space-y-5 min-h-[calc(100dvh-120px)] md:h-[calc(100vh-120px)] flex flex-col">
       <div className="bg-white/80 backdrop-blur-sm rounded-[24px] border border-white/70 p-5">
         <div className="flex items-center gap-2 mb-2">
           <LifeBuoy size={18} className="text-indigo-500" />

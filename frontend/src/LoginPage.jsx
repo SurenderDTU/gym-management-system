@@ -58,7 +58,7 @@ function LoginPage({ setToken }) {
 
   return (
     <div
-      className="h-screen flex items-center justify-center font-['Inter'] relative overflow-hidden"
+      className="min-h-[100dvh] flex items-center justify-center font-['Inter'] relative overflow-hidden"
       style={{
         background: `
           radial-gradient(ellipse at 20% 25%, rgba(99,102,241,0.2) 0%, transparent 55%),
