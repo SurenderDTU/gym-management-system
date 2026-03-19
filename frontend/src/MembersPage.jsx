@@ -1,17 +1,94 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { 
-  Search, Eye, Edit2, Plus, X, Zap, RefreshCw, Trash2, Ban, Calendar, 
-  CreditCard, Clock, AlertTriangle, CheckCircle, Flame, TrendingUp, 
-  MessageSquare, ListChecks, UserPlus, Phone, Download, Users 
+import {
+  Search, Edit2, Plus, X, Zap, RefreshCw, Trash2, Ban, Calendar,
+  CreditCard, Clock, AlertTriangle, CheckCircle, Flame, TrendingUp,
+  MessageSquare, ListChecks, UserPlus, Phone, Download, Users, Mail,
 } from 'lucide-react';
 
-const MembersPage = ({ token }) => {
+const AVATAR_GRADIENTS = [
+  'from-violet-500 to-purple-600',
+  'from-blue-500 to-indigo-600',
+  'from-emerald-500 to-teal-600',
+  'from-rose-500 to-pink-600',
+  'from-amber-500 to-orange-600',
+  'from-cyan-500 to-sky-600',
+  'from-fuchsia-500 to-pink-600',
+  'from-lime-500 to-green-600',
+];
+
+const getInitials = (name) => name?.split(' ').filter(Boolean).map((n) => n[0]).join('').toUpperCase().slice(0, 2) || '?';
+const getAvatarGradient = (name) => AVATAR_GRADIENTS[(name?.charCodeAt(0) || 0) % AVATAR_GRADIENTS.length];
+
+const GradientAvatar = ({ name, src, sizePx = 36, onClick, className = '', imageFit = 'object-cover' }) => {
+  const [imgError, setImgError] = useState(false);
+  const showInitials = !src || imgError;
+  return (
+    <div onClick={onClick} style={{ width: sizePx, height: sizePx, minWidth: sizePx, minHeight: sizePx }} className={`rounded-full overflow-hidden flex-shrink-0 flex items-center justify-center bg-slate-100 ${onClick ? 'cursor-pointer' : ''} ${className}`}>
+      {showInitials ? (
+        <div className={`w-full h-full rounded-full bg-gradient-to-br ${getAvatarGradient(name)} flex items-center justify-center`}>
+          <span style={{ fontSize: Math.max(9, sizePx * 0.34) }} className="text-white font-black leading-none select-none">{getInitials(name)}</span>
+        </div>
+      ) : (
+        <img src={src} alt={name} className={`w-full h-full block ${imageFit}`} style={{ aspectRatio: '1 / 1', objectPosition: 'center top' }} onError={() => setImgError(true)} />
+      )}
+    </div>
+  );
+};
+
+const SkeletonRow = () => (
+  <tr className="border-b border-slate-50">
+    <td className="py-5 px-2"><div className="w-4 h-4 bg-slate-100 rounded animate-pulse" /></td>
+    <td className="py-5 pr-2 pl-0"><div className="flex items-center gap-3"><div className="w-9 h-9 rounded-full bg-slate-100 animate-pulse shrink-0" /><div className="flex flex-col gap-1.5"><div className="h-3 w-28 bg-slate-100 rounded animate-pulse" /><div className="h-2 w-14 bg-slate-100 rounded animate-pulse" /></div></div></td>
+    <td className="py-5 px-2"><div className="h-3 w-24 bg-slate-100 rounded animate-pulse" /></td>
+    <td className="py-5 px-2"><div className="h-3 w-32 bg-slate-100 rounded animate-pulse" /></td>
+    <td className="py-5 px-2"><div className="mx-auto h-6 w-20 bg-slate-100 rounded-full animate-pulse" /></td>
+    <td className="py-5 px-2"><div className="mx-auto h-4 w-20 bg-slate-100 rounded animate-pulse" /></td>
+    <td className="py-5 px-2"><div className="mx-auto h-6 w-12 bg-slate-100 rounded-full animate-pulse" /></td>
+    <td className="py-5 px-2"><div className="mx-auto h-3 w-20 bg-slate-100 rounded animate-pulse" /></td>
+    <td className="py-5 px-4"><div className="flex gap-2 justify-end"><div className="h-7 w-16 bg-slate-100 rounded-lg animate-pulse" /><div className="h-7 w-7 bg-slate-100 rounded animate-pulse" /><div className="h-7 w-7 bg-slate-100 rounded animate-pulse" /></div></td>
+  </tr>
+);
+
+const FILTER_TABS = [
+  { key: 'All', label: 'All', active: 'bg-slate-800 text-white shadow-md', inactive: 'text-slate-500 hover:bg-slate-50 hover:text-slate-700', badgeActive: 'bg-white/20 text-white', badgeInactive: 'bg-slate-100 text-slate-500' },
+  { key: 'Active', label: 'Active', active: 'bg-emerald-500 text-white shadow-md shadow-emerald-200', inactive: 'text-emerald-600 hover:bg-emerald-50', badgeActive: 'bg-white/20 text-white', badgeInactive: 'bg-emerald-50 text-emerald-600' },
+  { key: 'Inactive', label: 'Inactive', active: 'bg-amber-500 text-white shadow-md shadow-amber-200', inactive: 'text-amber-600 hover:bg-amber-50', badgeActive: 'bg-white/20 text-white', badgeInactive: 'bg-amber-50 text-amber-600' },
+  { key: 'Expired', label: 'Expired', active: 'bg-rose-500 text-white shadow-md shadow-rose-200', inactive: 'text-rose-600 hover:bg-rose-50', badgeActive: 'bg-white/20 text-white', badgeInactive: 'bg-rose-50 text-rose-600' },
+  { key: 'Expiring Soon', label: 'Expiring Soon', active: 'bg-orange-500 text-white shadow-md shadow-orange-200', inactive: 'text-orange-600 hover:bg-orange-50', badgeActive: 'bg-white/20 text-white', badgeInactive: 'bg-orange-50 text-orange-600' },
+];
+
+const STATUS_PILLS = { ACTIVE: 'bg-emerald-100 text-emerald-700', INACTIVE: 'bg-amber-100 text-amber-700', 'EXPIRING SOON': 'bg-orange-100 text-orange-700', EXPIRED: 'bg-rose-100 text-rose-700', UNPAID: 'bg-slate-100 text-slate-500' };
+
+const extractArray = (value, keys = []) => {
+  if (Array.isArray(value)) return value;
+  if (!value || typeof value !== 'object') return [];
+  for (const key of keys) {
+    if (Array.isArray(value[key])) return value[key];
+  }
+  return [];
+};
+
+const loadRazorpayScript = () => {
+  return new Promise((resolve) => {
+    if (window.Razorpay) return resolve(true);
+    const script = document.createElement('script');
+    script.src = 'https://checkout.razorpay.com/v1/checkout.js';
+    script.onload = () => resolve(true);
+    script.onerror = () => resolve(false);
+    document.body.appendChild(script);
+  });
+};
+
+const MembersPage = ({ token, toast, showConfirm, defaultFilter = 'All' }) => {
   const [members, setMembers] = useState([]);
+  const [pagination, setPagination] = useState({ page: 1, limit: 30, total: 0, totalPages: 1, hasNext: false, hasPrev: false });
+  const [currentPage, setCurrentPage] = useState(1);
   const [plans, setPlans] = useState([]);
-  const [filter, setFilter] = useState('All');
+  const [filter, setFilter] = useState(defaultFilter);
   const [searchTerm, setSearchTerm] = useState('');
-  
+  const [loading, setLoading] = useState(true);
+
   const [selectedIds, setSelectedIds] = useState([]);
   const [isBulkMode, setIsBulkMode] = useState(false);
   const [showSuccessAnim, setShowSuccessAnim] = useState(false);
@@ -22,9 +99,10 @@ const MembersPage = ({ token }) => {
   const [showActivateModal, setShowActivateModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [showDetailsModal, setShowDetailsModal] = useState(false);
-  
+
   const [selectedMember, setSelectedMember] = useState(null);
   const [selectedPlanId, setSelectedPlanId] = useState('');
+  const [addSelectedPlanId, setAddSelectedPlanId] = useState('');
   const [addFormData, setAddFormData] = useState({ full_name: '', email: '', phone: '' });
   const [editFormData, setEditFormData] = useState({ id: '', full_name: '', email: '', phone: '' });
 
@@ -32,34 +110,37 @@ const MembersPage = ({ token }) => {
   const [editFile, setEditFile] = useState(null);
   const [previewUrl, setPreviewUrl] = useState(null);
 
-  const fetchMembers = async () => {
+  const fetchMembers = async ({ page = currentPage, search = searchTerm } = {}) => {
     try {
-      const res = await axios.get('http://localhost:5000/api/members', {
-        headers: { 'x-auth-token': token }
-      });
-      setMembers(res.data);
-    } catch (err) {
-      console.error("Fetch error:", err);
-    }
+      const url = `/api/members?paginate=true&page=${page}&limit=30${search ? `&search=${encodeURIComponent(search)}` : ''}`;
+      const res = await axios.get(url, { headers: { 'x-auth-token': token } });
+      setMembers(extractArray(res.data, ['members', 'rows', 'items']));
+      if (res.data?.pagination) {
+        setPagination(res.data.pagination);
+      }
+    } catch (err) { toast?.('Failed to load members', 'error'); } finally { setLoading(false); }
   };
 
   const fetchPlans = async () => {
     try {
-      const res = await axios.get('http://localhost:5000/api/memberships/plans', {
-        headers: { 'x-auth-token': token }
-      });
-      setPlans(res.data);
-    } catch (err) {
-      console.error("Error fetching plans:", err);
-    }
+      const res = await axios.get('/api/memberships/plans', { headers: { 'x-auth-token': token } });
+      setPlans(extractArray(res.data, ['plans', 'rows', 'items']));
+    } catch (err) { console.error('Error fetching plans:', err); }
   };
 
   useEffect(() => {
-    if (token) {
-      fetchMembers();
-      fetchPlans();
-    }
+    if (!token) return;
+    fetchPlans();
   }, [token]);
+
+  useEffect(() => {
+    if (!token) return;
+    setLoading(true);
+    const timer = setTimeout(() => {
+      fetchMembers({ page: currentPage, search: searchTerm });
+    }, 220);
+    return () => clearTimeout(timer);
+  }, [token, currentPage, searchTerm]);
 
   const downloadReceipt = () => {
     if (!receiptData) return;
@@ -83,7 +164,7 @@ const MembersPage = ({ token }) => {
         </head>
         <body>
           <div class="receipt-box">
-            <div class="logo">GYM DASHBOARD</div>
+            <div class="logo">GymVault</div>
             <div class="sub-logo">Official Payment Receipt</div>
             <div class="info-row"><span class="label">Receipt Date</span><span class="value">${new Date().toLocaleDateString('en-GB')}</span></div>
             <div class="info-row"><span class="label">Member Name</span><span class="value">${receiptData.memberName}</span></div>
@@ -92,7 +173,7 @@ const MembersPage = ({ token }) => {
             <div class="divider"></div>
             <div class="total-row">
               <span class="label" style="color: #0f172a; font-size: 14px;">Total Amount</span>
-              <span style="font-weight: 900; font-size: 20px; color: #10b981;">₹${receiptData.amount}</span>
+              <span style="font-weight: 900; font-size: 20px; color: #10b981;">&#8377;${receiptData.amount}</span>
             </div>
             <div class="footer">This is a computer generated receipt.</div>
           </div>
@@ -105,156 +186,126 @@ const MembersPage = ({ token }) => {
 
   const handleActivateSubscription = async (e, type = 'online') => {
     if (e) e.preventDefault();
-    if (!selectedPlanId) return alert("Please select a plan first.");
-    const selectedPlan = plans.find(p => p.id === parseInt(selectedPlanId));
-    
+    if (!selectedPlanId) { toast?.('Please select a plan first.', 'warning'); return; }
+    const selectedPlan = plans.find((p) => p.id === parseInt(selectedPlanId));
+
     if (type === 'cash') {
-      if (window.confirm(`Confirm cash payment of ₹${selectedPlan.price}?`)) {
-        await processActivation(selectedPlan, `CASH-${Date.now()}`);
-      }
+      showConfirm?.({
+        title: 'Confirm Cash Payment',
+        message: `Record a cash payment of ₹${selectedPlan.price} for ${selectedMember?.full_name}?`,
+        confirmLabel: 'Confirm Cash',
+        variant: 'warning',
+        onConfirm: () => processActivation(selectedPlan, `CASH-${Date.now()}`),
+      });
       return;
     }
 
-    const options = {
-      key: "rzp_test_SGpsNCBP4TXtP5",
-      amount: selectedPlan.price * 100,
-      currency: "INR",
-      name: "Gym Dashboard",
-      description: `Membership: ${selectedPlan.name}`,
-      handler: async (res) => await processActivation(selectedPlan, res.razorpay_payment_id),
-      prefill: { name: selectedMember.full_name, contact: selectedMember.phone, email: selectedMember.email },
-      theme: { color: "#7c3aed" }
-    };
-    const rzp = new window.Razorpay(options);
-    rzp.open();
+    try {
+      const scriptLoaded = await loadRazorpayScript();
+      if (!scriptLoaded) {
+        return toast?.('Failed to load Razorpay checkout.', 'error');
+      }
+
+      const orderRes = await axios.post(
+        '/api/memberships/online/create-order',
+        { member_id: selectedMember.id, plan_id: selectedPlan.id },
+        { headers: { 'x-auth-token': token } }
+      );
+
+      const keyId = orderRes.data?.key_id;
+      const order = orderRes.data?.order;
+      if (!keyId || !order?.id) {
+        return toast?.('Member payment gateway not configured. Ask owner to setup Integrations.', 'error');
+      }
+
+      const options = {
+        key: keyId,
+        amount: order.amount,
+        currency: order.currency || 'INR',
+        name: 'Gym Membership Payment',
+        description: `Membership: ${selectedPlan.name}`,
+        order_id: order.id,
+        handler: async (res) => {
+          try {
+            await axios.post(
+              '/api/memberships/online/verify',
+              {
+                member_id: selectedMember.id,
+                plan_id: selectedPlan.id,
+                razorpay_order_id: res.razorpay_order_id,
+                razorpay_payment_id: res.razorpay_payment_id,
+                razorpay_signature: res.razorpay_signature,
+              },
+              { headers: { 'x-auth-token': token } }
+            );
+            await axios.put(`/api/members/${selectedMember.id}/check-in`, {}, { headers: { 'x-auth-token': token } });
+            setReceiptData({ memberName: selectedMember.full_name, planName: selectedPlan.name, amount: selectedPlan.price, payId: res.razorpay_payment_id });
+            setShowActivateModal(false);
+            setShowSuccessAnim(true);
+          } catch (verifyErr) {
+            toast?.(verifyErr?.response?.data?.error || 'Payment verification failed. Please try again.', 'error');
+          }
+        },
+        prefill: { name: selectedMember.full_name, contact: selectedMember.phone, email: selectedMember.email },
+        theme: { color: '#7c3aed' },
+      };
+      const rzp = new window.Razorpay(options);
+      rzp.open();
+    } catch (err) {
+      toast?.(err?.response?.data?.error || 'Unable to start online payment.', 'error');
+    }
   };
 
   const processActivation = async (plan, paymentId) => {
     try {
       const isOnline = paymentId && String(paymentId).startsWith('pay_');
       const mode = isOnline ? 'Online' : 'Cash';
-
-      await axios.post('http://localhost:5000/api/memberships/activate', {
-        member_id: selectedMember.id,
-        plan_id: plan.id,
-        payment_id: paymentId,
-        payment_mode: mode
-      }, { headers: { 'x-auth-token': token } });
-
-      await axios.put(`http://localhost:5000/api/members/${selectedMember.id}/check-in`, {}, { 
-        headers: { 'x-auth-token': token } 
-      });
-
+      await axios.post('/api/memberships/activate', { member_id: selectedMember.id, plan_id: plan.id, payment_id: paymentId, payment_mode: mode }, { headers: { 'x-auth-token': token } });
+      await axios.put(`/api/members/${selectedMember.id}/check-in`, {}, { headers: { 'x-auth-token': token } });
       setReceiptData({ memberName: selectedMember.full_name, planName: plan.name, amount: plan.price, payId: paymentId });
       setShowActivateModal(false);
-      setShowSuccessAnim(true); 
-    } catch (err) { 
-      alert("Activation failed");
-    }
+      setShowSuccessAnim(true);
+    } catch (err) { toast?.('Activation failed. Please try again.', 'error'); }
   };
 
   const sendWhatsApp = (member, type) => {
-    const gymName = "Gym Dashboard"; 
-    let message = type === 'reminder' 
-      ? `Hi ${member.full_name}, your membership at ${gymName} is expiring in ${member.days_left} days.`
-      : `Hi ${member.full_name}, we missed you at ${gymName}! Hope to see you back soon!`;
+    const gymName = 'GymVault';
+    const message = type === 'reminder' ? `Hi ${member.full_name}, your membership at ${gymName} is expiring in ${member.days_left} days. Please renew to continue your fitness journey!` : `Hi ${member.full_name}, we missed you at ${gymName}! Hope to see you back soon!`;
     window.open(`https://wa.me/91${member.phone}?text=${encodeURIComponent(message)}`, '_blank');
   };
 
   const handleCall = (phoneNumber) => window.open(`tel:${phoneNumber}`, '_self');
 
   const handleBulkReminder = () => {
-    const selected = members.filter(m => selectedIds.includes(m.id));
+    const selected = members.filter((m) => selectedIds.includes(m.id));
     selected.forEach((m, index) => setTimeout(() => sendWhatsApp(m, 'reminder'), index * 1000));
   };
 
   const handleQuickExtend = async (days) => {
     try {
-      await axios.post('http://localhost:5000/api/memberships/extend', { member_id: editFormData.id, days }, { headers: { 'x-auth-token': token } });
+      await axios.post('/api/memberships/extend', { member_id: editFormData.id, days }, { headers: { 'x-auth-token': token } });
       fetchMembers();
-      alert(`Extended by ${days} days!`);
-    } catch (err) { alert("Extension failed."); }
+      toast?.(`Extended by ${days} days!`, 'success');
+    } catch (err) { toast?.('Extension failed.', 'error'); }
   };
 
- const getWarning = (member) => {
-    // 1. Expiry Warning
-    if (member.days_left <= 5 && member.days_left > 0 && member.membership_status === 'ACTIVE') {
-      return { 
-        type: 'expiry', 
-        text: `Expiring in ${member.days_left} days`, 
-        color: 'text-orange-500', 
-        bgColor: 'bg-orange-500' 
-      };
-    }
-    
-    // 2. Inactive Warning (FIXED: Changed > 7 to > 4 to match status)
-    if (member.last_visit) {
-      const lastVisitDate = new Date(member.last_visit);
-      const today = new Date();
-      // Use the same math as status logic for consistency
-      const diffTime = Math.abs(today - lastVisitDate);
-      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
-
-      if (diffDays > 4 && member.membership_status === 'ACTIVE') {
-        return { 
-          type: 'inactive', 
-          text: `Inactive for ${diffDays} days`, 
-          color: 'text-amber-500', 
-          bgColor: 'bg-amber-500'
-        };
-      }
-    } else if (!member.last_visit && member.membership_status === 'ACTIVE') {
-       return { type: 'inactive', text: 'Never visited', color: 'text-slate-400', bgColor: 'bg-slate-400' };
-    }
-    
-    return null; 
+  const getStatusInfo = (member) => {
+    if (member.membership_status === 'UNPAID' || !member.plan_name) return { label: 'UNPAID', color: 'bg-slate-300', text: 'text-slate-400' };
+    if (member.days_left <= 0) return { label: 'EXPIRED', color: 'bg-rose-500', text: 'text-rose-500' };
+    const today = new Date();
+    const lastVisit = member.last_visit ? new Date(member.last_visit) : null;
+    let diffDays = lastVisit ? Math.floor((Date.UTC(today.getFullYear(), today.getMonth(), today.getDate()) - Date.UTC(lastVisit.getFullYear(), lastVisit.getMonth(), lastVisit.getDate())) / (1000 * 60 * 60 * 24)) : 999;
+    if (diffDays > 4) return { label: 'INACTIVE', color: 'bg-amber-400', text: 'text-amber-500' };
+    if (member.days_left <= 5) return { label: 'EXPIRING SOON', color: 'bg-orange-500', text: 'text-orange-500' };
+    return { label: 'ACTIVE', color: 'bg-emerald-400', text: 'text-emerald-500' };
   };
-
-// 🛠️ FIX: Corrected Status Logic (Unpaid check is now #1 Priority)
-const getStatusInfo = (member) => {
-  // Priority 1: Unpaid Check
-  if (member.membership_status === 'UNPAID' || !member.plan_name) {
-    return { label: 'UNPAID', color: 'bg-slate-300', text: 'text-slate-400' };
-  }
-  
-  // Priority 2: Expired Check
-  if (member.days_left <= 0) {
-    return { label: 'EXPIRED', color: 'bg-rose-500', text: 'text-rose-500' };
-  }
-  
-  // Priority 3: INACTIVE CALCULATION (Using raw timestamps to be safe)
-  const today = new Date();
-  const lastVisit = member.last_visit ? new Date(member.last_visit) : null;
-
-  let diffDays = 0;
-  if (lastVisit) {
-    // Reset both to midnight UTC for fair calendar day comparison
-    const d1 = Date.UTC(today.getFullYear(), today.getMonth(), today.getDate());
-    const d2 = Date.UTC(lastVisit.getFullYear(), lastVisit.getMonth(), lastVisit.getDate());
-    diffDays = Math.floor((d1 - d2) / (1000 * 60 * 60 * 24));
-  } else {
-    diffDays = 999; 
-  }
-
-  // If visit was more than 4 days ago, label as Inactive
-  if (diffDays > 4) {
-    return { label: 'INACTIVE', color: 'bg-amber-400', text: 'text-amber-500' };
-  }
-
-  // Priority 4: Expiring Soon
-  if (member.days_left <= 5) {
-    return { label: 'EXPIRING SOON', color: 'bg-orange-500', text: 'text-orange-500' };
-  }
-  
-  return { label: 'ACTIVE', color: 'bg-emerald-400', text: 'text-emerald-500' };
-};
 
   const handleManualCheckIn = async (e, memberId) => {
     e.stopPropagation();
     try {
-      await axios.put(`http://localhost:5000/api/members/${memberId}/check-in`, {}, { headers: { 'x-auth-token': token } });
+      await axios.put(`/api/members/${memberId}/check-in`, {}, { headers: { 'x-auth-token': token } });
       fetchMembers();
-    } catch (err) { alert("Check-in failed"); }
+    } catch (err) { toast?.('Check-in failed', 'error'); }
   };
 
   const handleAddMember = async (e) => {
@@ -263,100 +314,64 @@ const getStatusInfo = (member) => {
     formData.append('full_name', addFormData.full_name);
     formData.append('email', addFormData.email);
     formData.append('phone', addFormData.phone);
-    if (addFile) formData.append('profile_pic', addFile); 
+    if (addFile) formData.append('profile_pic', addFile);
     try {
-      await axios.post('http://localhost:5000/api/members/add', formData, { 
-        headers: { 'x-auth-token': token, 'Content-Type': 'multipart/form-data' } 
-      });
+      const res = await axios.post('/api/members/add', formData, { headers: { 'x-auth-token': token, 'Content-Type': 'multipart/form-data' } });
       setShowAddModal(false);
-      setAddFormData({ full_name: '', email: '', phone: '' });
-      setAddFile(null); setPreviewUrl(null);
-      fetchMembers();
-  } catch (err) { 
-      // FIX: Show the specific error message from backend if available
-      const errorMessage = err.response && err.response.data && err.response.data.error 
-        ? err.response.data.error 
-        : "Error adding member.";
-      alert(errorMessage); 
+      setAddFormData({ full_name: '', email: '', phone: '' }); setAddFile(null); setPreviewUrl(null);
+      await fetchMembers();
+      toast?.('Member added successfully!', 'success');
+      if (addSelectedPlanId && res.data) { setSelectedMember(res.data); setSelectedPlanId(addSelectedPlanId); setShowActivateModal(true); }
+      setAddSelectedPlanId('');
+    } catch (err) {
+      const message = err?.response?.data?.error || err?.response?.data?.message || 'Error adding member.';
+      toast?.(message, 'error');
     }
   };
 
-  const handleEditClick = (member) => {
-    setEditFormData({ id: member.id, full_name: member.full_name, email: member.email, phone: member.phone });
-    setShowEditModal(true);
-  };
-
-  const handleViewDetails = (member) => {
-    setSelectedMember(member);
-    setShowDetailsModal(true);
-  };
+  const handleEditClick = (member) => { setEditFormData({ id: member.id, full_name: member.full_name, email: member.email, phone: member.phone }); setShowEditModal(true); };
+  const handleViewDetails = (member) => { setSelectedMember(member); setShowDetailsModal(true); };
 
   const handleUpdateMember = async (e) => {
     e.preventDefault();
     const formData = new FormData();
-    formData.append('full_name', editFormData.full_name);
-    formData.append('email', editFormData.email);
-    formData.append('phone', editFormData.phone);
+    formData.append('full_name', editFormData.full_name); formData.append('email', editFormData.email); formData.append('phone', editFormData.phone);
     if (editFile) formData.append('profile_pic', editFile);
     try {
-      await axios.put(`http://localhost:5000/api/members/${editFormData.id}`, formData, { 
-        headers: { 'x-auth-token': token, 'Content-Type': 'multipart/form-data' } 
-      });
-      setShowEditModal(false);
-      setEditFile(null); fetchMembers();
-    } catch (err) { alert("Update failed"); }
+      await axios.put(`/api/members/${editFormData.id}`, formData, { headers: { 'x-auth-token': token, 'Content-Type': 'multipart/form-data' } });
+      setShowEditModal(false); setEditFile(null); fetchMembers(); toast?.('Member updated successfully!', 'success');
+    } catch (err) { toast?.('Update failed. Please try again.', 'error'); }
   };
 
-  const handleDeleteMember = async () => {
-    if (window.confirm("Are you sure you want to delete this member?")) {
-      try {
-        await axios.delete(`http://localhost:5000/api/members/${editFormData.id}`, { headers: { 'x-auth-token': token } });
-        setShowEditModal(false); fetchMembers();
-      } catch (err) { alert("Delete failed"); }
-    }
+  const handleDeleteMember = () => {
+    showConfirm?.({ title: 'Delete Member', message: 'This action cannot be undone.', confirmLabel: 'Yes, Delete', variant: 'danger', onConfirm: async () => {
+        try { await axios.delete(`/api/members/${editFormData.id}`, { headers: { 'x-auth-token': token } }); setShowEditModal(false); fetchMembers(); toast?.('Member deleted.', 'success'); } catch (err) { toast?.('Delete failed.', 'error'); }
+      }
+    });
   };
 
-  const handleRemovePlan = async () => {
-    if (window.confirm("Cancel active plan?")) {
-      try {
-        await axios.post(`http://localhost:5000/api/memberships/remove-plan`, { member_id: editFormData.id }, { headers: { 'x-auth-token': token } });
-        setShowEditModal(false); fetchMembers();
-      } catch (err) { alert("Failed to remove plan"); }
-    }
+  const handleRemovePlan = () => {
+    showConfirm?.({ title: 'Cancel Active Plan', message: 'This will remove the active membership plan.', confirmLabel: 'Cancel Plan', variant: 'danger', onConfirm: async () => {
+        try { await axios.post('/api/memberships/remove-plan', { member_id: editFormData.id }, { headers: { 'x-auth-token': token } }); setShowEditModal(false); fetchMembers(); toast?.('Plan removed.', 'success'); } catch (err) { toast?.('Failed to remove plan.', 'error'); }
+      }
+    });
   };
 
-  const toggleSelection = (id) => {
-    setSelectedIds(prev => prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id]);
-  };
+  const toggleSelection = (id) => setSelectedIds((prev) => (prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]));
 
-  const filteredMembers = members.filter(m => {
+  const filteredMembers = members.filter((m) => {
     const statusInfo = getStatusInfo(m);
     const lastVisitDate = m.last_visit ? new Date(m.last_visit) : null;
     const diffDays = lastVisitDate ? Math.ceil((new Date() - lastVisitDate) / (1000 * 60 * 60 * 24)) : 999;
-    const matchesFilter = filter === 'All' ? true : 
-                          (filter === 'Active' && (statusInfo.label === 'ACTIVE' || statusInfo.label === 'EXPIRING SOON')) ||
-                          (filter === 'Expired' && statusInfo.label === 'EXPIRED') ||
-                          (filter === 'Expiring Soon' && statusInfo.label === 'EXPIRING SOON') ||
-                          // FIX: Added label check here as well
-                          (filter === 'Inactive' && statusInfo.label !== 'UNPAID' && diffDays > 4);
+    const matchesFilter = filter === 'All' ? true : (filter === 'Active' && (statusInfo.label === 'ACTIVE' || statusInfo.label === 'EXPIRING SOON')) || (filter === 'Expired' && statusInfo.label === 'EXPIRED') || (filter === 'Expiring Soon' && statusInfo.label === 'EXPIRING SOON') || (filter === 'Inactive' && statusInfo.label !== 'UNPAID' && diffDays > 4);
     const searchLower = searchTerm.toLowerCase();
     return matchesFilter && (m.full_name?.toLowerCase().includes(searchLower) || m.email?.toLowerCase().includes(searchLower) || m.phone?.includes(searchTerm));
   });
 
-  const counts = {
-    All: members.length,
-    Active: members.filter(m => ['ACTIVE', 'EXPIRING SOON'].includes(getStatusInfo(m).label)).length,
-    Expired: members.filter(m => getStatusInfo(m).label === 'EXPIRED').length,
-    "Expiring Soon": members.filter(m => getStatusInfo(m).label === 'EXPIRING SOON').length,
-   Inactive: members.filter(m => {
-  const statusInfo = getStatusInfo(m);
-  return statusInfo.label === 'INACTIVE';
-}).length
-  };
+  const counts = { All: members.length, Active: members.filter((m) => ['ACTIVE', 'EXPIRING SOON'].includes(getStatusInfo(m).label)).length, Expired: members.filter((m) => getStatusInfo(m).label === 'EXPIRED').length, 'Expiring Soon': members.filter((m) => getStatusInfo(m).label === 'EXPIRING SOON').length, Inactive: members.filter((m) => getStatusInfo(m).label === 'INACTIVE').length, Unpaid: members.filter((m) => getStatusInfo(m).label === 'UNPAID').length };
 
   return (
-    <div className="flex flex-col gap-6 p-6 bg-white min-h-screen relative">
-      
+    <div className="flex flex-col gap-5 p-2 min-h-screen relative">
       {showSuccessAnim && (
         <div className="fixed inset-0 z-[200] flex items-center justify-center bg-slate-900/80 backdrop-blur-md animate-in fade-in duration-300">
           <div className="bg-white p-10 rounded-[40px] shadow-2xl text-center flex flex-col items-center animate-in zoom-in-95 duration-500 max-w-sm w-full">
@@ -371,163 +386,240 @@ const getStatusInfo = (member) => {
         </div>
       )}
 
-      <div className="flex justify-between items-center ml-[4px]">
-        <div><h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2">Members {isBulkMode && <span className="text-xs bg-slate-900 text-white px-2 py-1 rounded-full">{selectedIds.length} Selected</span>}</h1><p className="text-slate-500 text-sm">Manage your gym members</p></div>
-        <div className="flex gap-3">
-          <button onClick={() => {setIsBulkMode(!isBulkMode); setSelectedIds([]);}} className={`px-4 py-2 rounded-lg font-semibold flex items-center gap-2 border transition-all ${isBulkMode ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}><ListChecks size={18} /> {isBulkMode ? 'Exit Selection' : 'Bulk Actions'}</button>
-          <button onClick={() => setShowAddModal(true)} className="bg-[#0f172a] text-white px-4 py-2 rounded-lg font-semibold flex items-center gap-2 hover:bg-slate-800 shadow-sm transition-all"><Plus size={18} /> Add Member</button>
-        </div>
-      </div>    
-
-      <div className="flex items-center justify-between gap-4 ml-[4px]">
-        <div className="relative w-full max-w-md"><Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} /><input type="text" placeholder="Search by name, email, or phone..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-10 pr-4 py-2 border-b border-slate-200 focus:outline-none text-sm" /></div>
-        <div className="flex gap-2">
-          {['All', 'Active', 'Inactive', 'Expired', 'Expiring Soon'].map((tab) => (
-            <button key={tab} onClick={() => setFilter(tab)} className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-all flex items-center gap-2 ${filter === tab ? 'bg-slate-100 text-slate-900' : 'text-slate-400 hover:text-slate-600'}`}>{tab}<span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold ${filter === tab ? 'bg-white text-slate-900 shadow-sm' : 'bg-slate-50 text-slate-400'}`}>{counts[tab] || 0}</span></button>
-          ))}
-        </div>
-      </div>
-
-      <div className="overflow-x-auto ml-[4px]">
-        {members.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-20 bg-slate-50/50 rounded-[32px] border-2 border-dashed border-slate-200 animate-in fade-in slide-in-from-bottom-4 duration-700">
-            <div className="w-20 h-20 bg-white rounded-3xl shadow-xl flex items-center justify-center mb-6 text-slate-300"><Users size={40} /></div>
-            <h2 className="text-2xl font-black text-slate-900 mb-2">Build Your Community!</h2>
-            <p className="text-slate-500 font-bold mb-8 text-center max-w-xs">Your gym looks quiet. Start by adding your very first member to the system.</p>
-            <button onClick={() => setShowAddModal(true)} className="bg-slate-900 text-white px-8 py-4 rounded-2xl font-black flex items-center gap-3 hover:bg-slate-800 shadow-2xl transition-all active:scale-95"><UserPlus size={20} /> Add First Member</button>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        {[ { label: 'Total Members', count: counts.All, icon: Users, bg: 'bg-indigo-50', ic: 'text-indigo-600' }, { label: 'Active', count: counts.Active, icon: CheckCircle, bg: 'bg-emerald-50', ic: 'text-emerald-600' }, { label: 'Expired', count: counts.Expired, icon: Clock, bg: 'bg-rose-50', ic: 'text-rose-600' }, { label: 'Unpaid', count: counts.Unpaid, icon: AlertTriangle, bg: 'bg-amber-50', ic: 'text-amber-600' } ].map(({ label, count, icon: Icon, bg, ic }) => (
+          <div key={label} className="bg-white/80 backdrop-blur-sm rounded-2xl border border-white/60 p-4 flex items-center gap-3" style={{ boxShadow: '0 2px 16px rgba(99,102,241,0.05), 0 1px 3px rgba(0,0,0,0.03)' }}>
+            <div className={`w-10 h-10 rounded-xl ${bg} ${ic} flex items-center justify-center shrink-0`}><Icon size={18} /></div>
+            <div><p className="text-[10px] font-bold text-slate-400 uppercase tracking-wide leading-none mb-0.5">{label}</p><p className="text-2xl font-black text-slate-900 leading-none">{loading ? '—' : count}</p></div>
           </div>
-        ) : (
-          <table className="w-full text-left border-collapse table-fixed min-w-[1050px]">
-            <thead><tr className="text-slate-400 text-[11px] uppercase font-bold tracking-widest border-b border-slate-100"><th className="py-4 w-[45px] px-2">{isBulkMode && '✓'}</th><th className="py-4 w-[18%] pr-2 pl-0 text-left">Name</th><th className="py-4 w-[11%] px-2">Phone</th><th className="py-4 w-[17%] px-2">Email</th><th className="py-4 w-[12%] text-center px-2">Status</th><th className="py-4 w-[13%] text-center px-2">Plan</th><th className="py-4 w-[8%] text-center px-2">Days Left</th><th className="py-4 w-[11%] text-center px-2">Last Visit</th><th className="py-4 w-[10%] text-right px-4">Actions</th></tr></thead>
-           <tbody className="divide-y divide-slate-50">
-  {filteredMembers.map((member) => {
-    const statusInfo = getStatusInfo(member);
-    const warning = getWarning(member);
-    const displayDays = member.days_left < 0 ? 0 : (member.days_left || 0);
-    const lastVisitDate = member.last_visit ? new Date(member.last_visit) : null;
-    return (
-      <tr key={member.id} className={`group transition-colors ${selectedIds.includes(member.id) ? 'bg-slate-50' : 'hover:bg-slate-50/50'}`}>
-        <td className="py-5 px-2">{isBulkMode && <input type="checkbox" checked={selectedIds.includes(member.id)} onChange={() => toggleSelection(member.id)} className="h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-900" />}</td>
-       <td className="py-5 pr-2 pl-0 font-bold text-slate-900 text-sm text-left">
-  <div className="flex items-center gap-3 relative group/name">
-    <div 
-      onClick={() => setPreviewImage(member.profile_pic || 'https://via.placeholder.com/150')} 
-      className="w-8 h-8 rounded-full bg-slate-100 border border-slate-200 overflow-hidden cursor-zoom-in hover:border-purple-400 transition-all shrink-0"
-    >
-      <img src={member.profile_pic || 'https://via.placeholder.com/150'} alt="Profile" className="w-full h-full object-cover" />
-    </div>
-    
-    <div className="flex flex-col min-w-0">
-      <span className="truncate">{member.full_name}</span>
-      <div className="flex items-center gap-1">
-        {/* FIX: Showing warning for both Expired AND Inactive members, but NOT Unpaid */}
-        {(warning || member.days_left <= 0) && statusInfo.label !== 'UNPAID' && (
-          <div className="group/warn relative flex items-center">
-            <AlertTriangle 
-              size={12} 
-              className={`${member.days_left <= 0 ? 'text-rose-500' : 'text-amber-500'} cursor-help`} 
-            />
-            {/* FIX: Tooltip text logic to show actual status instead of '?' */}
-            <div className={`absolute left-full top-1/2 -translate-y-1/2 ml-2 hidden group-hover/warn:flex ${member.days_left <= 0 ? 'bg-rose-600' : 'bg-amber-600'} text-white text-[10px] py-1 px-2 rounded whitespace-nowrap z-50 shadow-xl font-bold items-center`}>
-              {member.days_left <= 0 ? 'Membership Expired' : (warning ? warning.text : 'Inactive Member')}
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-    
-    <div className="flex items-center gap-1 opacity-0 group-hover/name:opacity-100 transition-all ml-1 shrink-0">
-      <button onClick={() => handleCall(member.phone)} className="p-1 bg-blue-50 text-blue-600 rounded-full hover:bg-blue-600 hover:text-white transition-colors shadow-sm">
-        <Phone size={10} fill="currentColor" />
-      </button>
-      <button onClick={() => sendWhatsApp(member, 'reminder')} className="p-1 bg-emerald-50 text-emerald-600 rounded-full hover:bg-emerald-600 hover:text-white transition-colors shadow-sm">
-        <MessageSquare size={10} fill="currentColor" />
-      </button>
-    </div>
-  </div>
-</td>
-        <td className="py-5 px-2 text-slate-600 text-sm truncate">{member.phone}</td>
-        <td className="py-5 px-2 text-slate-500 text-sm truncate">{member.email}</td>
-        <td className="py-5 px-2 text-center text-sm"><div className="flex items-center justify-center"><span className={`inline-block w-2 h-2 rounded-full mr-2 ${statusInfo.color}`}></span><span className={`text-[10px] font-bold uppercase tracking-wider ${statusInfo.text}`}>{statusInfo.label}</span></div></td>
-        <td className="py-5 px-2 text-center text-slate-600 text-sm">{statusInfo.label === 'UNPAID' ? (<button onClick={() => { setSelectedMember(member); setShowActivateModal(true); }} className="inline-flex items-center gap-1 bg-purple-50 text-purple-600 px-3 py-1 rounded border border-purple-100 text-[10px] font-bold uppercase hover:bg-purple-600 hover:text-white transition-all active:scale-95 shadow-sm"><Zap size={10} fill="currentColor" /> Initiate</button>) : statusInfo.label === 'EXPIRED' ? (<button onClick={() => { setSelectedMember(member); setShowActivateModal(true); }} className="inline-flex items-center gap-1 bg-rose-50 text-rose-600 px-3 py-1 rounded border border-rose-100 text-[10px] font-bold uppercase hover:bg-rose-600 hover:text-white transition-all active:scale-95 shadow-sm"><RefreshCw size={10} /> Renew</button>) : (statusInfo.label === 'INACTIVE' || statusInfo.label === 'EXPIRING SOON') ? (<button onClick={() => sendWhatsApp(member, statusInfo.label === 'INACTIVE' ? 'followup' : 'reminder')} className="inline-flex items-center gap-1 bg-blue-50 text-blue-600 px-3 py-1 rounded border border-blue-100 text-[10px] font-bold uppercase hover:bg-blue-600 hover:text-white transition-all active:scale-95 shadow-sm"><MessageSquare size={10} fill="currentColor" /> Send Reminder</button>) : <span className="font-bold text-slate-900 truncate block">{member.plan_name}</span>}</td>
-        <td className={`py-5 px-2 text-center font-bold text-sm ${member.days_left <= 0 ? 'text-rose-500' : member.days_left <= 5 ? 'text-orange-500' : 'text-slate-900'}`}>{displayDays}</td>
-        <td className="py-5 px-2 text-center"><div className="flex items-center justify-center gap-1 pl-4"><span className="text-sm font-semibold text-slate-600">{member.last_visit ? new Date(member.last_visit).toLocaleDateString('en-GB') : '-'}</span><button onClick={(e) => handleManualCheckIn(e, member.id)} className="opacity-0 group-hover:opacity-100 text-emerald-500 bg-emerald-50 p-1 rounded-full transition-all shrink-0"><CheckCircle size={12} /></button></div></td>
-        <td className="py-5 px-4 text-right"><div className="flex justify-end items-center gap-3 text-slate-300"><button onClick={() => handleViewDetails(member)} className="hover:text-slate-600 transition-colors"><Eye size={18} /></button><button onClick={() => handleEditClick(member)} className="hover:text-slate-600 transition-colors"><Edit2 size={16} /></button></div></td>
-      </tr>
-    );
-  })}
-</tbody>
-          </table>
-        )}
+        ))}
       </div>
 
-      {/* --- RESTORED BULK ACTION BAR --- */}
-      {selectedIds.length > 0 && (
-        <div className="fixed bottom-10 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-6 py-4 rounded-2xl shadow-2xl flex items-center gap-8 z-[100] border border-slate-700 backdrop-blur-md bg-opacity-95 animate-in slide-in-from-bottom-10">
-            <div className="flex flex-col">
-                <span className="text-xs text-slate-400 font-bold uppercase tracking-tight">Bulk Actions</span>
-                <span className="text-sm font-black">{selectedIds.length} Selected</span>
+      <div className="bg-white/80 backdrop-blur-sm rounded-[28px] border border-white/70 p-6 flex flex-col gap-5" style={{ boxShadow: '0 4px 32px rgba(99,102,241,0.06), 0 1px 4px rgba(0,0,0,0.04)' }}>
+        <div className="flex justify-between items-center">
+          <div>
+            <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2">Members {isBulkMode && (<span className="text-xs bg-slate-900 text-white px-2.5 py-1 rounded-full font-black">{selectedIds.length} selected</span>)}</h1>
+            <p className="text-slate-500 text-sm mt-0.5">Manage and track your gym members</p>
+          </div>
+          <div className="flex gap-2.5">
+            <button onClick={() => { setIsBulkMode(!isBulkMode); setSelectedIds([]); }} className={`px-4 py-2.5 rounded-xl font-semibold flex items-center gap-2 border text-sm transition-all ${isBulkMode ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}><ListChecks size={16} /> {isBulkMode ? 'Exit' : 'Bulk Select'}</button>
+            <button onClick={() => setShowAddModal(true)} className="text-white px-5 py-2.5 rounded-xl font-bold flex items-center gap-2 transition-all hover:opacity-90 active:scale-95 text-sm" style={{ background: 'linear-gradient(135deg, #6366f1, #a855f7)', boxShadow: '0 4px 16px rgba(99,102,241,0.35)' }}><Plus size={16} /> Add Member</button>
+          </div>
+        </div>
+
+        <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3">
+          <div className="relative w-full sm:max-w-xs">
+            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+            <input type="text" placeholder="Search name, email, phone…" value={searchTerm} onChange={(e) => { setCurrentPage(1); setSearchTerm(e.target.value); }} className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 text-sm font-medium transition-all" />
+          </div>
+          <div className="flex gap-1.5 flex-wrap">
+            {FILTER_TABS.map(({ key, label, active, inactive, badgeActive, badgeInactive }) => (
+              <button key={key} onClick={() => setFilter(key)} className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${filter === key ? active : inactive}`}>{label} <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-black ${filter === key ? badgeActive : badgeInactive}`}>{counts[key] ?? 0}</span></button>
+            ))}
+          </div>
+        </div>
+
+        <div className="overflow-x-auto">
+          {!loading && members.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-20 bg-slate-50/50 rounded-[32px] border-2 border-dashed border-slate-200 animate-in fade-in slide-in-from-bottom-4 duration-700">
+              <div className="w-20 h-20 bg-white rounded-3xl shadow-xl flex items-center justify-center mb-6 text-slate-300"><Users size={40} /></div>
+              <h2 className="text-2xl font-black text-slate-900 mb-2">Build Your Community!</h2>
+              <p className="text-slate-500 font-bold mb-8 text-center max-w-xs">Your gym looks quiet. Start by adding your very first member.</p>
+              <button onClick={() => setShowAddModal(true)} className="text-white px-8 py-4 rounded-2xl font-black flex items-center gap-3 transition-all active:scale-95" style={{ background: 'linear-gradient(135deg, #6366f1, #a855f7)', boxShadow: '0 8px 32px rgba(99,102,241,0.4)' }}><UserPlus size={20} /> Add First Member</button>
             </div>
-            
-            <div className="h-8 w-[1px] bg-slate-700"></div>
-            
-            {/* Restored Reminder Button */}
-            <button 
-              onClick={handleBulkReminder} 
-              className="flex items-center gap-2 text-xs font-bold bg-emerald-500/10 text-emerald-400 px-4 py-2 rounded-xl border border-emerald-500/20 hover:bg-emerald-500 hover:text-white transition-all"
+          ) : (
+            <>
+              <div className="md:hidden space-y-3 py-1">
+                {loading ? (
+                  Array.from({ length: 4 }).map((_, i) => (
+                    <div key={`member-mobile-skeleton-${i}`} className="p-4 rounded-2xl border border-slate-100 bg-white">
+                      <div className="h-3 w-24 bg-slate-100 rounded animate-pulse mb-2" />
+                      <div className="h-3 w-40 bg-slate-100 rounded animate-pulse mb-2" />
+                      <div className="h-3 w-20 bg-slate-100 rounded animate-pulse" />
+                    </div>
+                  ))
+                ) : filteredMembers.length === 0 ? (
+                  <div className="text-center text-slate-400 font-bold py-8">No members found</div>
+                ) : (
+                  filteredMembers.map((member) => {
+                    const statusInfo = getStatusInfo(member);
+                    return (
+                      <div key={`member-mobile-${member.id}`} className="p-4 rounded-2xl border border-slate-100 bg-white space-y-3" onClick={() => handleViewDetails(member)}>
+                        <div className="flex items-center gap-3">
+                          <GradientAvatar name={member.full_name} src={member.profile_pic} sizePx={38} />
+                          <div className="min-w-0 flex-1">
+                            <p className="font-bold text-slate-900 truncate">{member.full_name}</p>
+                            <p className="text-xs text-slate-500 truncate">{member.phone} • {member.email}</p>
+                          </div>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className={`inline-block px-2.5 py-1 text-[9px] font-black uppercase tracking-wider rounded-full ${STATUS_PILLS[statusInfo.label] || 'bg-slate-100 text-slate-500'}`}>{statusInfo.label}</span>
+                          <span className="text-xs font-bold text-slate-600">{member.plan_name || 'No Plan'}</span>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+
+              <table className="hidden md:table w-full text-left border-collapse table-fixed min-w-[1100px]">
+              <thead>
+                <tr className="text-slate-400 text-[10px] uppercase font-bold tracking-widest border-b border-slate-100">
+                  <th className="py-4 w-[40px] px-2">{isBulkMode && '✓'}</th>
+                  <th className="py-4 w-[18%] pr-2 pl-0">Name</th>
+                  <th className="py-4 w-[11%] px-2">Phone</th>
+                  <th className="py-4 w-[15%] px-2">Email</th>
+                  <th className="py-4 w-[11%] text-center px-2">Status</th>
+                  <th className="py-4 w-[10%] text-center px-2">Plan</th>
+                  <th className="py-4 w-[7%] text-center px-2">Days</th>
+                  <th className="py-4 w-[10%] text-center px-2">Last Visit</th>
+                  <th className="py-4 w-[18%] text-right px-4">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-50">
+                {loading ? ( Array.from({ length: 5 }).map((_, i) => <SkeletonRow key={i} />) ) : filteredMembers.length === 0 ? (
+                  <tr>
+                    <td colSpan="9">
+                      <div className="flex flex-col items-center justify-center py-20 animate-in fade-in duration-500">
+                        <div className="w-16 h-16 bg-slate-100 rounded-2xl flex items-center justify-center mb-5 text-slate-300"><Search size={32} /></div>
+                        <h2 className="text-xl font-black text-slate-900 mb-2">No members found</h2>
+                        <p className="text-slate-500 font-bold text-sm mb-1">No results for <span className="text-slate-900 bg-slate-100 px-2 py-0.5 rounded font-black">"{searchTerm || filter}"</span></p>
+                        <button onClick={() => { setCurrentPage(1); setSearchTerm(''); setFilter('All'); }} className="px-6 py-3 bg-slate-900 text-white rounded-xl font-bold text-sm hover:bg-slate-800 transition-all active:scale-95 flex items-center gap-2 mt-6"><X size={16} /> Clear Search</button>
+                      </div>
+                    </td>
+                  </tr>
+                ) : (
+                  filteredMembers.map((member) => {
+                    const statusInfo = getStatusInfo(member);
+                    const displayDays = member.days_left < 0 ? 0 : (member.days_left || 0);
+                    return (
+                      <tr key={member.id} onClick={() => (isBulkMode ? toggleSelection(member.id) : handleViewDetails(member))} className={`group cursor-pointer transition-colors ${selectedIds.includes(member.id) ? 'bg-indigo-50/40' : 'hover:bg-slate-50/70'}`}>
+                        <td className="py-4 px-2" onClick={(e) => e.stopPropagation()}>
+                          {isBulkMode && <input type="checkbox" checked={selectedIds.includes(member.id)} onChange={() => toggleSelection(member.id)} className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer" />}
+                        </td>
+                        <td className="py-4 pr-2 pl-0">
+                          <div className="flex items-center gap-2.5">
+                            <GradientAvatar name={member.full_name} src={member.profile_pic} sizePx={34} onClick={(e) => { e.stopPropagation(); if (member.profile_pic) setPreviewImage(member.profile_pic); }} className="border border-white/80 shadow-sm hover:scale-105 transition-transform ring-1 ring-slate-200/60" />
+                            <div className="flex flex-col min-w-0"><span className="truncate font-bold text-slate-900 text-sm">{member.full_name}</span><span className="text-[10px] text-slate-400 font-medium">ID #{member.id}</span></div>
+                          </div>
+                        </td>
+                        <td className="py-4 px-2 text-slate-600 text-sm truncate">{member.phone}</td>
+                        <td className="py-4 px-2 text-slate-500 text-xs truncate">{member.email}</td>
+                        <td className="py-4 px-2 text-center"><span className={`inline-block px-2.5 py-1 text-[9px] font-black uppercase tracking-wider rounded-full ${STATUS_PILLS[statusInfo.label] || 'bg-slate-100 text-slate-500'}`}>{statusInfo.label}</span></td>
+                        <td className="py-4 px-2 text-center">{member.plan_name ? <span className="text-xs font-bold text-slate-700 truncate block">{member.plan_name}</span> : <span className="text-slate-300 font-bold text-sm">—</span>}</td>
+                        <td className="py-4 px-2 text-center">{statusInfo.label === 'UNPAID' ? <span className="text-slate-300 font-bold text-sm">—</span> : member.days_left <= 0 ? <span className="px-2 py-0.5 bg-rose-100 text-rose-600 text-[9px] font-black rounded-full uppercase">Exp'd</span> : member.days_left <= 5 ? <span className="px-2.5 py-1 bg-orange-100 text-orange-600 text-[10px] font-black rounded-full">{displayDays}d</span> : <span className="text-sm font-bold text-slate-700">{displayDays}</span>}</td>
+                        <td className="py-4 px-2 text-center"><span className="text-xs font-semibold text-slate-600">{member.last_visit ? new Date(member.last_visit).toLocaleDateString('en-GB') : '—'}</span></td>
+                        <td className="py-4 px-4 text-right" onClick={(e) => e.stopPropagation()}>
+                          <div className="flex justify-end items-center gap-1.5">
+                            {statusInfo.label === 'UNPAID' && <button onClick={() => { setSelectedMember(member); setShowActivateModal(true); }} className="inline-flex items-center gap-1 bg-purple-50 text-purple-600 px-2.5 py-1.5 rounded-lg border border-purple-100 text-[10px] font-black uppercase hover:bg-purple-600 hover:text-white transition-all shadow-sm"><Zap size={10} fill="currentColor" /> Initiate</button>}
+                            {statusInfo.label === 'EXPIRED' && <button onClick={() => { setSelectedMember(member); setShowActivateModal(true); }} className="inline-flex items-center gap-1 bg-rose-50 text-rose-600 px-2.5 py-1.5 rounded-lg border border-rose-100 text-[10px] font-black uppercase hover:bg-rose-600 hover:text-white transition-all shadow-sm"><RefreshCw size={10} /> Renew</button>}
+                            {(statusInfo.label === 'INACTIVE' || statusInfo.label === 'EXPIRING SOON') && <button onClick={() => sendWhatsApp(member, statusInfo.label === 'INACTIVE' ? 'followup' : 'reminder')} className="inline-flex items-center gap-1 bg-emerald-50 text-emerald-600 px-2.5 py-1.5 rounded-lg border border-emerald-100 text-[10px] font-black uppercase hover:bg-emerald-600 hover:text-white transition-all shadow-sm"><MessageSquare size={10} fill="currentColor" /> Remind</button>}
+                            <button onClick={(e) => handleManualCheckIn(e, member.id)} title="Manual Check-In" className="p-1.5 text-emerald-500 bg-emerald-50 border border-emerald-100 rounded-lg hover:bg-emerald-500 hover:text-white transition-all"><CheckCircle size={13} /></button>
+                            <button onClick={(e) => { e.stopPropagation(); handleEditClick(member); }} className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-all"><Edit2 size={13} /></button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+              </table>
+            </>
+          )}
+        </div>
+
+        <div className="flex items-center justify-between pt-1">
+          <p className="text-xs font-semibold text-slate-500">
+            Showing page <span className="font-black text-slate-800">{pagination.page}</span> of <span className="font-black text-slate-800">{pagination.totalPages}</span>
+            {pagination.total ? ` · ${pagination.total} total` : ''}
+          </p>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setCurrentPage((prev) => Math.max(1, prev - 1))}
+              disabled={!pagination.hasPrev}
+              className="px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-bold text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed"
             >
-                <Zap size={14} fill="currentColor"/> Send Reminders
+              Prev
             </button>
-            
-            <button className="flex items-center gap-2 text-xs font-bold bg-rose-500/10 text-rose-400 px-4 py-2 rounded-xl border border-rose-500/20 hover:bg-rose-500 hover:text-white transition-all">
-                <Trash2 size={14}/> Delete Selection
+            <button
+              onClick={() => setCurrentPage((prev) => prev + 1)}
+              disabled={!pagination.hasNext}
+              className="px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-bold text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Next
             </button>
-            
-            <button onClick={() => setSelectedIds([])} className="text-slate-400 hover:text-white ml-2">
-                <X size={20} />
-            </button>
+          </div>
+        </div>
+      </div>
+
+      {selectedIds.length > 0 && (
+        <div className="fixed bottom-10 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-6 py-4 rounded-2xl shadow-2xl flex items-center gap-6 z-[100] border border-slate-700 backdrop-blur-md bg-opacity-95 animate-in slide-in-from-bottom-10">
+          <div className="flex flex-col"><span className="text-[10px] text-slate-400 font-bold uppercase tracking-tight">Bulk Actions</span><span className="text-sm font-black">{selectedIds.length} Selected</span></div>
+          <div className="h-8 w-[1px] bg-slate-700" />
+          <button onClick={handleBulkReminder} className="flex items-center gap-2 text-xs font-bold bg-emerald-500/10 text-emerald-400 px-4 py-2 rounded-xl border border-emerald-500/20 hover:bg-emerald-500 hover:text-white transition-all"><Zap size={14} fill="currentColor" /> Send Reminders</button>
+          <button className="flex items-center gap-2 text-xs font-bold bg-rose-500/10 text-rose-400 px-4 py-2 rounded-xl border border-rose-500/20 hover:bg-rose-500 hover:text-white transition-all"><Trash2 size={14} /> Delete</button>
+          <button onClick={() => setSelectedIds([])} className="text-slate-400 hover:text-white ml-1"><X size={18} /></button>
         </div>
       )}
 
       {showDetailsModal && selectedMember && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-[70] p-4">
-          <div className="bg-white rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-200 max-h-[90vh] flex flex-col">
-            <div className="p-6 bg-[#0f172a] text-white flex justify-between items-center shrink-0">
-              <div><h2 className="text-xl font-bold">{selectedMember.full_name}</h2><p className="text-slate-400 text-[10px] uppercase tracking-widest font-bold">Comprehensive Profile</p></div>
-              <button onClick={() => setShowDetailsModal(false)} className="hover:bg-white/10 p-2 rounded-full transition-all"><X size={20} /></button>
+          <div className="bg-white rounded-[24px] w-full max-w-lg shadow-2xl overflow-visible animate-in fade-in zoom-in duration-200 max-h-[90vh] flex flex-col">
+            <div className="relative pt-4 pb-5 px-6 shrink-0" style={{ background: 'linear-gradient(135deg, #0f0c29 0%, #302b63 60%, #24243e 100%)' }}>
+              <div className="flex justify-between items-start">
+                <div>
+                  <p className="text-[9px] text-slate-400 font-bold uppercase tracking-[0.2em] mb-1">Member Profile</p>
+                  <h2 className="text-white text-xl font-black leading-tight">{selectedMember.full_name}</h2>
+                  <p className="text-slate-400 text-xs mt-0.5">Joined {selectedMember.joining_date ? new Date(selectedMember.joining_date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'N/A'}</p>
+                </div>
+                <button onClick={() => setShowDetailsModal(false)} className="text-white/50 hover:text-white hover:bg-white/10 p-2 rounded-full transition-all"><X size={20} /></button>
+              </div>
             </div>
-            <div className="p-6 space-y-6 overflow-y-auto flex-1">
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                <div className="bg-blue-50/50 p-3 rounded-xl border border-blue-100 flex flex-col items-center text-center"><span className="text-[9px] font-bold text-blue-500 uppercase tracking-tighter mb-1">Total Visits</span><span className="text-lg font-black text-blue-900">{selectedMember.total_visits || 0}</span></div>
-                <div className="bg-orange-50/50 p-3 rounded-xl border border-orange-100 flex flex-col items-center text-center"><span className="text-[9px] font-bold text-orange-500 uppercase tracking-tighter mb-1">Streak</span><div className="flex items-center gap-1"><Flame size={12} className="text-orange-500" fill="currentColor" /><span className="text-lg font-black text-orange-900">{selectedMember.streak || 0}</span></div></div>
-                <div className="bg-emerald-50/50 p-3 rounded-xl border border-emerald-100 flex flex-col items-center text-center"><span className="text-[9px] font-bold text-emerald-500 uppercase tracking-tighter mb-1">Total Paid</span><span className="text-lg font-black text-emerald-900">₹{selectedMember.total_paid || 0}</span></div>
-                <div className="bg-purple-50/50 p-3 rounded-xl border border-purple-100 flex flex-col items-center text-center"><span className="text-[9px] font-bold text-purple-500 uppercase tracking-tighter mb-1 truncate w-full">Plan Type</span><span className="text-[10px] font-black text-purple-900 uppercase truncate w-full">{selectedMember.plan_name || 'N/A'}</span></div>
+
+            <div className="flex flex-col items-center -mt-10 px-6 pb-2 shrink-0 z-10">
+              <div role="button" tabIndex={0} onClick={() => selectedMember.profile_pic && setPreviewImage(selectedMember.profile_pic)} className="w-[96px] h-[96px] rounded-full border-[4px] border-white shadow-2xl bg-[#0b0f1e] flex items-center justify-center overflow-hidden cursor-pointer transition-transform hover:scale-105">
+                <GradientAvatar name={selectedMember.full_name} src={selectedMember.profile_pic} sizePx={88} imageFit="object-contain" className="!bg-transparent p-1" />
               </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="bg-slate-50 p-4 rounded-xl border border-slate-100"><div className="flex items-center gap-2 text-slate-400 mb-1"><Calendar size={14}/> <span className="text-[10px] font-bold uppercase tracking-tight">Joined On</span></div><p className="font-bold text-slate-900">{selectedMember.joining_date ? new Date(selectedMember.joining_date).toLocaleDateString('en-GB') : 'N/A'}</p></div>
-                <div className="bg-slate-50 p-4 rounded-xl border border-slate-100"><div className="flex items-center gap-2 text-slate-400 mb-1"><Clock size={14}/> <span className="text-[10px] font-bold uppercase tracking-tight">Valid Till</span></div><p className={`font-bold ${selectedMember.days_left <= 0 ? 'text-rose-500' : 'text-emerald-500'}`}>{selectedMember.expiry_date ? new Date(selectedMember.expiry_date).toLocaleDateString('en-GB') : 'No Active Plan'}</p></div>
+              <span className={`mt-2.5 px-3 py-0.5 text-[9px] font-black uppercase tracking-widest rounded-full shadow-sm ${STATUS_PILLS[getStatusInfo(selectedMember).label] || 'bg-slate-100 text-slate-500'}`}>{getStatusInfo(selectedMember).label}</span>
+            </div>
+
+            <div className="px-6 pb-4 space-y-4 overflow-y-auto overflow-x-hidden flex-1 min-h-0 rounded-b-[24px]">
+              <div className="grid grid-cols-2 gap-3">
+                <div className="bg-slate-50 rounded-xl p-3 border border-slate-100 flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0"><div className="w-7 h-7 bg-blue-50 text-blue-500 rounded-lg flex items-center justify-center shrink-0"><Phone size={13} /></div><div className="min-w-0"><p className="text-[9px] text-slate-400 font-bold uppercase tracking-wider leading-none mb-0.5">Phone</p><p className="text-sm font-bold text-slate-900 truncate">{selectedMember.phone}</p></div></div>
+                  <div className="flex gap-1 shrink-0"><button onClick={() => handleCall(selectedMember.phone)} className="p-1.5 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors shadow-sm"><Phone size={11} fill="currentColor" /></button><button onClick={() => sendWhatsApp(selectedMember, 'reminder')} className="p-1.5 bg-emerald-500 text-white rounded-lg hover:bg-emerald-600 transition-colors shadow-sm"><MessageSquare size={11} fill="currentColor" /></button></div>
+                </div>
+                <div className="bg-slate-50 rounded-xl p-3 border border-slate-100 flex items-center gap-2"><div className="w-7 h-7 bg-indigo-50 text-indigo-500 rounded-lg flex items-center justify-center shrink-0"><Mail size={13} /></div><div className="min-w-0"><p className="text-[9px] text-slate-400 font-bold uppercase tracking-wider leading-none mb-0.5">Email</p><p className="text-xs font-bold text-slate-900 truncate">{selectedMember.email}</p></div></div>
               </div>
-              <div className="bg-slate-50 p-4 rounded-xl border border-slate-100"><div className="flex items-center gap-2 text-slate-400 mb-1"><TrendingUp size={14}/> <span className="text-[10px] font-bold uppercase tracking-tight">Last Checked In</span></div><p className="font-bold text-slate-700">{selectedMember.last_visit ? new Date(selectedMember.last_visit).toLocaleString('en-GB') : 'Never Checked In'}</p></div>
-              <div>
-                <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-2"><CreditCard size={14}/> Recent Payment History</h3>
-                <div className="border border-slate-100 rounded-xl overflow-hidden shadow-sm">
-                  <div className="max-h-[220px] overflow-y-auto">
-                    <table className="w-full text-xs">
-                      <thead className="bg-slate-50 text-slate-500 font-bold border-b sticky top-0"><tr><th className="px-4 py-2 text-left">Date</th><th className="px-4 py-2 text-left">Category</th><th className="px-4 py-2 text-right">Amount</th></tr></thead>
-                      <tbody className="divide-y text-slate-600">
-                        {/* FIX 5: SHOWING AMOUNT AND CHANGING RENEWAL TO JOINING/RENEWAL */}
-                        {selectedMember.payment_history?.map((pay, idx) => (
-                          <tr key={idx} className="hover:bg-slate-50/50 transition-colors">
-                            <td className="px-4 py-3">{new Date(pay.payment_date).toLocaleDateString('en-GB')}</td>
-                            <td className="px-4 py-3">{idx === selectedMember.payment_history.length - 1 ? 'Membership Joining' : 'Plan Renewal'}</td>
-                            <td className="px-4 py-3 text-right font-black text-slate-900">₹{pay.amount_paid}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+
+              <div className="grid grid-cols-4 gap-2">
+                <div className="bg-blue-50/50 p-3 rounded-xl border border-blue-100 text-center"><p className="text-[9px] font-bold text-blue-500 uppercase tracking-tighter mb-1">Visits</p><p className="text-lg font-black text-blue-900">{selectedMember.total_visits || 0}</p></div>
+                <div className="bg-orange-50/50 p-3 rounded-xl border border-orange-100 text-center"><p className="text-[9px] font-bold text-orange-500 uppercase tracking-tighter mb-1">Streak</p><div className="flex items-center justify-center gap-0.5"><Flame size={11} className="text-orange-500" fill="currentColor" /><p className="text-lg font-black text-orange-900">{selectedMember.streak || 0}</p></div></div>
+                <div className="bg-emerald-50/50 p-3 rounded-xl border border-emerald-100 text-center"><p className="text-[9px] font-bold text-emerald-500 uppercase tracking-tighter mb-1">Paid</p><p className="text-sm font-black text-emerald-900">₹{selectedMember.total_paid || 0}</p></div>
+                <div className="bg-purple-50/50 p-3 rounded-xl border border-purple-100 text-center"><p className="text-[9px] font-bold text-purple-500 uppercase tracking-tighter mb-1">Plan</p><p className="text-[10px] font-black text-purple-900 uppercase truncate">{selectedMember.plan_name || '—'}</p></div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-100"><div className="flex items-center gap-1.5 text-slate-400 mb-1"><Calendar size={12} /><span className="text-[9px] font-bold uppercase tracking-tight">Valid Till</span></div><p className={`font-bold text-sm ${selectedMember.days_left <= 0 ? 'text-rose-500' : 'text-emerald-600'}`}>{selectedMember.expiry_date ? new Date(selectedMember.expiry_date).toLocaleDateString('en-GB') : 'No Active Plan'}</p></div>
+                <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-100"><div className="flex items-center gap-1.5 text-slate-400 mb-1"><TrendingUp size={12} /><span className="text-[9px] font-bold uppercase tracking-tight">Last Check-In</span></div><p className="font-bold text-sm text-slate-700">{selectedMember.last_visit ? new Date(selectedMember.last_visit).toLocaleDateString('en-GB') : 'Never'}</p></div>
+              </div>
+
+              {selectedMember.payment_history?.length > 0 && (
+                <div>
+                  <h3 className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-2 flex items-center gap-1.5"><CreditCard size={12} /> Payment History</h3>
+                  <div className="border border-slate-100 rounded-xl overflow-hidden shadow-sm">
+                    <div className="max-h-[180px] overflow-y-auto">
+                      <table className="w-full text-xs"><thead className="bg-slate-50 border-b sticky top-0"><tr><th className="px-4 py-2 text-left text-[9px] font-black text-slate-400 uppercase tracking-wider">Date</th><th className="px-4 py-2 text-left text-[9px] font-black text-slate-400 uppercase tracking-wider">Mode</th><th className="px-4 py-2 text-left text-[9px] font-black text-slate-400 uppercase tracking-wider">Status</th><th className="px-4 py-2 text-right text-[9px] font-black text-slate-400 uppercase tracking-wider">Amount</th></tr></thead><tbody className="divide-y text-slate-600">{selectedMember.payment_history.map((pay, idx) => (<tr key={idx} className="hover:bg-slate-50/50 transition-colors"><td className="px-4 py-2.5 font-medium">{new Date(pay.payment_date).toLocaleDateString('en-GB')}</td><td className="px-4 py-2.5 font-medium">{pay.payment_mode || 'Cash'}</td><td className="px-4 py-2.5"><span className={`px-1.5 py-0.5 rounded-full text-[8px] font-black uppercase ${!pay.status || pay.status === 'Paid' ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>{pay.status || 'Paid'}</span></td><td className="px-4 py-2.5 text-right font-black text-slate-900">₹{pay.amount_paid}</td></tr>))}</tbody></table>
+                    </div>
                   </div>
                 </div>
-              </div>
+              )}
+            </div>
+
+            <div className="px-6 py-4 border-t border-slate-100 flex gap-2.5 shrink-0 bg-slate-50/60">
+              {(getStatusInfo(selectedMember).label === 'EXPIRED' || getStatusInfo(selectedMember).label === 'UNPAID') && (<button onClick={() => { setShowDetailsModal(false); setShowActivateModal(true); }} className="flex-1 py-2.5 text-white text-xs font-black rounded-xl flex items-center justify-center gap-1.5 transition-all hover:opacity-90 active:scale-95" style={{ background: 'linear-gradient(135deg, #6366f1, #a855f7)' }}><Zap size={13} fill="currentColor" />{getStatusInfo(selectedMember).label === 'EXPIRED' ? 'Renew Plan' : 'Activate Plan'}</button>)}
+              <button onClick={() => sendWhatsApp(selectedMember, 'reminder')} className="flex-1 py-2.5 bg-emerald-500 text-white text-xs font-black rounded-xl flex items-center justify-center gap-1.5 hover:bg-emerald-600 transition-all active:scale-95"><MessageSquare size={13} fill="currentColor" /> WhatsApp</button>
+              <button onClick={() => { setShowDetailsModal(false); handleEditClick(selectedMember); }} className="flex-1 py-2.5 bg-slate-800 text-white text-xs font-black rounded-xl flex items-center justify-center gap-1.5 hover:bg-slate-700 transition-all active:scale-95"><Edit2 size={13} /> Edit</button>
             </div>
           </div>
         </div>
@@ -535,34 +627,48 @@ const getStatusInfo = (member) => {
 
       {showEditModal && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-[60] p-4">
-          <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl overflow-hidden border border-slate-100 animate-in zoom-in-95">
-            <div className="p-6 bg-slate-50 border-b border-slate-100 flex justify-between items-center"><div><h2 className="text-xl font-bold text-slate-900">Edit Member</h2></div><button onClick={() => setShowEditModal(false)} className="bg-white p-2 rounded-full shadow-sm hover:bg-slate-100 text-slate-400"><X size={20} /></button></div>
+          <div className="bg-white rounded-[28px] w-full max-w-md shadow-2xl overflow-hidden border border-slate-100 animate-in zoom-in-95">
+            <div className="relative p-6 text-white flex justify-between items-center" style={{ background: 'linear-gradient(135deg, #0f0c29 0%, #302b63 100%)' }}>
+              <div className="flex items-center gap-3"><div className="w-10 h-10 bg-white/15 rounded-xl flex items-center justify-center"><Edit2 size={18} /></div><div><h2 className="text-lg font-black">Edit Member</h2><p className="text-white/50 text-[10px] font-bold uppercase tracking-wider">Update Profile</p></div></div>
+              <button onClick={() => setShowEditModal(false)} className="p-2 rounded-full hover:bg-white/10 text-white/60 hover:text-white transition-all"><X size={20} /></button>
+            </div>
             <form onSubmit={handleUpdateMember} className="p-6 space-y-5">
-              <div className="flex justify-center -mt-2"><div className="relative group"><div className="w-20 h-20 rounded-full bg-white border-4 border-white shadow-lg overflow-hidden"><img src={editFile ? URL.createObjectURL(editFile) : (members.find(m => m.id === editFormData.id)?.profile_pic || 'https://via.placeholder.com/150')} alt="Current" className="w-full h-full object-cover" /></div><label className="absolute inset-0 flex items-center justify-center bg-slate-900/50 text-white text-[10px] font-bold opacity-0 group-hover:opacity-100 transition-all rounded-full cursor-pointer">Change<input type="file" accept="image/*" className="hidden" onChange={(e) => setEditFile(e.target.files[0])} /></label></div></div>
+              <div className="flex justify-center -mt-1"><div className="relative group"><div className="w-20 h-20 rounded-full overflow-hidden shadow-xl border-4 border-white">{editFile ? <img src={URL.createObjectURL(editFile)} alt="Preview" className="w-full h-full object-cover" /> : <GradientAvatar name={members.find((m) => m.id === editFormData.id)?.full_name || editFormData.full_name} src={members.find((m) => m.id === editFormData.id)?.profile_pic} sizePx={80} />}</div><label className="absolute inset-0 flex items-center justify-center bg-slate-900/50 text-white text-[10px] font-bold opacity-0 group-hover:opacity-100 transition-all rounded-full cursor-pointer">Change<input type="file" accept="image/*" className="hidden" onChange={(e) => setEditFile(e.target.files[0])} /></label></div></div>
               <div className="space-y-4">
-                <div><label className="block text-[10px] font-bold text-slate-400 uppercase mb-1.5 ml-1">Full Name</label><input type="text" required className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none text-slate-900 font-semibold" value={editFormData.full_name} onChange={(e) => setEditFormData({...editFormData, full_name: e.target.value})} /></div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div><label className="block text-[10px] font-bold text-slate-400 uppercase mb-1.5 ml-1">Phone</label><input type="text" required className="w-full px-4 py-2.5 bg-slate-50 border rounded-xl text-slate-900 font-semibold" value={editFormData.phone} onChange={(e) => setEditFormData({...editFormData, phone: e.target.value})} /></div>
-                  <div><label className="block text-[10px] font-bold text-slate-400 uppercase mb-1.5 ml-1">Email</label><input type="email" required className="w-full px-4 py-2.5 bg-slate-50 border rounded-xl text-slate-900 font-semibold" value={editFormData.email} onChange={(e) => setEditFormData({...editFormData, email: e.target.value})} /></div>
+                <div><label className="block text-[10px] font-bold text-slate-400 uppercase mb-1.5 ml-0.5">Full Name</label><input type="text" required className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 text-slate-900 font-semibold text-sm transition-all" value={editFormData.full_name} onChange={(e) => setEditFormData({ ...editFormData, full_name: e.target.value })} /></div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div><label className="block text-[10px] font-bold text-slate-400 uppercase mb-1.5 ml-0.5">Phone</label><input type="text" required className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 text-slate-900 font-semibold text-sm transition-all" value={editFormData.phone} onChange={(e) => setEditFormData({ ...editFormData, phone: e.target.value })} /></div>
+                  <div><label className="block text-[10px] font-bold text-slate-400 uppercase mb-1.5 ml-0.5">Email</label><input type="email" required className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 text-slate-900 font-semibold text-sm transition-all" value={editFormData.email} onChange={(e) => setEditFormData({ ...editFormData, email: e.target.value })} /></div>
                 </div>
-                <div className="bg-slate-50 p-4 rounded-xl border border-dashed border-slate-300"><label className="block text-[10px] font-bold text-slate-400 uppercase mb-2 ml-1 flex items-center gap-2"><Clock size={12}/> Quick Extend</label><div className="flex items-center gap-2">{[2, 5, 15].map(days => (<button key={days} type="button" onClick={() => handleQuickExtend(days)} className="flex-1 bg-white border border-slate-200 px-2 py-2 rounded-lg text-[10px] font-black hover:bg-slate-900 hover:text-white transition-all shadow-sm">+ {days} DAYS</button>))}</div></div>
               </div>
-              <div className="pt-4 flex flex-col gap-3"><button type="submit" className="w-full py-3 bg-[#0f172a] text-white rounded-xl font-bold hover:bg-slate-800 shadow-md transition-all active:scale-95">Save Changes</button><div className="flex items-center gap-3 pt-2"><button type="button" onClick={handleRemovePlan} className="flex-1 py-2.5 text-[10px] font-bold text-slate-500 border border-slate-200 rounded-xl hover:bg-slate-50 flex items-center justify-center gap-2"><Ban size={12} /> Remove Plan</button><button type="button" onClick={handleDeleteMember} className="flex-1 py-2.5 text-[10px] font-bold text-rose-500 border border-rose-100 bg-rose-50 rounded-xl hover:bg-rose-500 hover:text-white flex items-center justify-center gap-2"><Trash2 size={12} /> Delete</button></div></div>
+              <div className="bg-gradient-to-br from-indigo-50 to-purple-50 p-4 rounded-2xl border border-indigo-100"><label className="flex items-center gap-2 text-[10px] font-black text-indigo-600 uppercase tracking-wider mb-3"><Clock size={12} /> Quick Extend Membership</label><div className="grid grid-cols-3 gap-2">{[2, 5, 15].map((days) => (<button key={days} type="button" onClick={() => handleQuickExtend(days)} className="py-2.5 bg-white border border-indigo-200 text-indigo-700 text-xs font-black rounded-xl hover:bg-indigo-600 hover:text-white hover:border-indigo-600 transition-all shadow-sm active:scale-95">+{days} Days</button>))}</div></div>
+              <button type="submit" className="w-full py-3 text-white rounded-xl font-black text-sm transition-all hover:opacity-90 active:scale-[0.98] shadow-lg" style={{ background: 'linear-gradient(135deg, #6366f1, #a855f7)', boxShadow: '0 4px 16px rgba(99,102,241,0.35)' }}>Save Changes</button>
+              <div className="border-t border-dashed border-rose-100 pt-4"><p className="text-[9px] font-black text-rose-300 uppercase tracking-widest mb-3 text-center">Danger Zone</p><div className="flex gap-2"><button type="button" onClick={handleRemovePlan} className="flex-1 py-2.5 text-[10px] font-bold text-slate-500 border border-slate-200 rounded-xl hover:bg-slate-50 flex items-center justify-center gap-1.5 transition-all"><Ban size={11} /> Remove Plan</button><button type="button" onClick={handleDeleteMember} className="flex-1 py-2.5 text-[10px] font-bold text-rose-500 border border-rose-200 bg-rose-50 rounded-xl hover:bg-rose-500 hover:text-white flex items-center justify-center gap-1.5 transition-all"><Trash2 size={11} /> Delete Member</button></div></div>
             </form>
           </div>
         </div>
       )}
 
       {showAddModal && (
-        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-150">
-            <div className="p-6 border-b border-slate-100 flex justify-between items-center"><h2 className="text-xl font-bold text-slate-900">New Member</h2><button onClick={() => setShowAddModal(false)}><X size={20} className="text-slate-400" /></button></div>
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-[28px] w-full max-w-md shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-150">
+            <div className="relative p-6 text-white flex justify-between items-center" style={{ background: 'linear-gradient(135deg, #059669 0%, #10b981 100%)' }}>
+              <div className="flex items-center gap-3"><div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center"><UserPlus size={18} /></div><div><h2 className="text-lg font-black">New Member</h2><p className="text-white/60 text-[10px] font-bold uppercase tracking-wider">Add to GymVault</p></div></div>
+              <button onClick={() => { setShowAddModal(false); setAddSelectedPlanId(''); }} className="p-2 rounded-full hover:bg-white/10 text-white/60 hover:text-white transition-all"><X size={20} /></button>
+            </div>
             <form onSubmit={handleAddMember} className="p-6 space-y-4">
-              <div className="flex justify-center mb-6"><div className="relative group"><div className="w-24 h-24 rounded-full bg-slate-100 border-2 border-dashed border-slate-300 flex items-center justify-center overflow-hidden">{previewUrl ? (<img src={previewUrl} alt="Preview" className="w-full h-full object-cover" />) : (<UserPlus size={32} className="text-slate-300" />)}</div><label className="absolute inset-0 flex items-center justify-center bg-slate-900/50 text-white text-xs font-bold opacity-0 group-hover:opacity-100 transition-all rounded-full cursor-pointer">Upload<input type="file" accept="image/*" className="hidden" onChange={(e) => { setAddFile(e.target.files[0]); setPreviewUrl(URL.createObjectURL(e.target.files[0])); }} /></label></div></div>
-              <div><label className="block text-xs font-bold text-slate-500 uppercase mb-1">Full Name</label><input type="text" required className="w-full px-4 py-2 bg-slate-50 border rounded-lg font-semibold text-slate-900" value={addFormData.full_name} onChange={(e) => setAddFormData({...addFormData, full_name: e.target.value})} /></div>
-              <div><label className="block text-xs font-bold text-slate-500 uppercase mb-1">Email</label><input type="email" required className="w-full px-4 py-2 bg-slate-50 border rounded-lg font-semibold text-slate-900" value={addFormData.email} onChange={(e) => setAddFormData({...addFormData, email: e.target.value})} /></div>
-              <div><label className="block text-xs font-bold text-slate-500 uppercase mb-1">Phone</label><input type="text" required className="w-full px-4 py-2 bg-slate-50 border rounded-lg font-semibold text-slate-900" value={addFormData.phone} onChange={(e) => setAddFormData({...addFormData, phone: e.target.value})} /></div>
-              <button type="submit" className="w-full py-3 bg-[#0f172a] text-white rounded-xl font-bold shadow-lg transition-all active:scale-95">Save Member</button>
+              <div className="flex flex-col items-center"><label className="cursor-pointer block"><div className="w-24 h-24 rounded-full overflow-hidden border-2 border-dashed border-slate-200 bg-slate-50 flex items-center justify-center hover:border-emerald-400 hover:bg-emerald-50/30 transition-all">{previewUrl ? <img src={previewUrl} alt="Preview" className="w-full h-full object-cover" /> : <div className="flex flex-col items-center gap-1 text-slate-300"><UserPlus size={28} /><span className="text-[9px] font-bold uppercase tracking-wider">Upload</span></div>}</div><input type="file" accept="image/*" className="hidden" onChange={(e) => { setAddFile(e.target.files[0]); setPreviewUrl(URL.createObjectURL(e.target.files[0])); }} /></label><p className="text-[10px] text-slate-400 font-medium mt-2">Click to upload photo (optional)</p></div>
+              <div><label className="block text-[10px] font-bold text-slate-400 uppercase mb-1.5 ml-0.5">Full Name *</label><input type="text" required placeholder="e.g. Rahul Sharma" className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-emerald-300 focus:border-emerald-400 font-semibold text-slate-900 text-sm transition-all" value={addFormData.full_name} onChange={(e) => setAddFormData({ ...addFormData, full_name: e.target.value })} /></div>
+              <div className="grid grid-cols-2 gap-3">
+                <div><label className="block text-[10px] font-bold text-slate-400 uppercase mb-1.5 ml-0.5">Phone *</label><input type="text" required placeholder="9876543210" className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-emerald-300 focus:border-emerald-400 font-semibold text-slate-900 text-sm transition-all" value={addFormData.phone} onChange={(e) => setAddFormData({ ...addFormData, phone: e.target.value })} /></div>
+                <div><label className="block text-[10px] font-bold text-slate-400 uppercase mb-1.5 ml-0.5">Email *</label><input type="email" required placeholder="rahul@email.com" className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-emerald-300 focus:border-emerald-400 font-semibold text-slate-900 text-sm transition-all" value={addFormData.email} onChange={(e) => setAddFormData({ ...addFormData, email: e.target.value })} /></div>
+              </div>
+              <div>
+                <label className="flex items-center gap-1.5 text-[10px] font-bold text-slate-400 uppercase mb-1.5 ml-0.5"><Zap size={10} className="text-emerald-500" /> Assign Plan Now (optional)</label>
+                <select className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-emerald-300 focus:border-emerald-400 text-sm font-semibold text-slate-700 appearance-none cursor-pointer transition-all" value={addSelectedPlanId} onChange={(e) => setAddSelectedPlanId(e.target.value)}><option value="">Skip — assign plan later</option>{plans.map((p) => (<option key={p.id} value={p.id}>{p.name} — ₹{p.price} / {p.duration_days}d</option>))}</select>
+                {addSelectedPlanId && <p className="text-[10px] text-emerald-600 font-bold mt-1.5 ml-0.5">Payment will be collected in the next step →</p>}
+              </div>
+              <button type="submit" className="w-full py-3 text-white rounded-xl font-black text-sm transition-all hover:opacity-90 active:scale-[0.98] shadow-lg" style={{ background: 'linear-gradient(135deg, #059669, #10b981)', boxShadow: '0 4px 16px rgba(5,150,105,0.35)' }}>{addSelectedPlanId ? 'Add Member & Assign Plan →' : 'Add Member'}</button>
             </form>
           </div>
         </div>
@@ -571,12 +677,22 @@ const getStatusInfo = (member) => {
       {showActivateModal && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-[110] p-4">
           <div className="bg-white rounded-[32px] w-full max-w-sm shadow-2xl overflow-hidden animate-in zoom-in-95 border">
-            <div className="p-8 text-center bg-gradient-to-b from-slate-50 to-white"><div className="w-16 h-16 bg-purple-100 text-purple-600 rounded-2xl flex items-center justify-center mx-auto mb-4 rotate-3 shadow-inner"><Zap size={32} fill="currentColor" /></div><h2 className="text-2xl font-black text-slate-900 tracking-tight">Activate Plan</h2><p className="text-slate-400 text-xs font-bold uppercase tracking-widest mt-1">For {selectedMember?.full_name}</p></div>
+            <div className="p-8 text-center bg-gradient-to-b from-slate-50 to-white">
+              <div className="w-16 h-16 bg-purple-100 text-purple-600 rounded-2xl flex items-center justify-center mx-auto mb-4 rotate-3 shadow-inner"><Zap size={32} fill="currentColor" /></div>
+              <h2 className="text-2xl font-black text-slate-900 tracking-tight">Activate Plan</h2>
+              <p className="text-slate-400 text-xs font-bold uppercase tracking-widest mt-1">For {selectedMember?.full_name}</p>
+            </div>
             <div className="px-8 pb-8 space-y-4">
-              <div className="relative"><select required className="w-full px-5 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:border-purple-500 text-sm font-black appearance-none cursor-pointer" value={selectedPlanId} onChange={(e) => setSelectedPlanId(e.target.value)}><option value="">Select Membership Plan...</option>{plans.map(p => <option key={p.id} value={p.id}>{p.name} — ₹{p.price}</option>)}</select><div className="absolute right-5 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400"><Calendar size={18} /></div></div>
+              <div className="relative">
+                <select required className="w-full px-5 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:border-purple-500 focus:outline-none text-sm font-black appearance-none cursor-pointer" value={selectedPlanId} onChange={(e) => setSelectedPlanId(e.target.value)}>
+                  <option value="">Select Membership Plan...</option>
+                  {plans.map((p) => (<option key={p.id} value={p.id}>{p.name} — ₹{p.price}</option>))}
+                </select>
+                <div className="absolute right-5 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400"><Calendar size={18} /></div>
+              </div>
               <div className="pt-2 space-y-3">
-                <button onClick={() => handleActivateSubscription(null, 'online')} className="w-full py-4 bg-[#7c3aed] text-white rounded-2xl font-black text-sm hover:bg-purple-700 shadow-lg shadow-purple-200 transition-all flex items-center justify-center gap-2"><CreditCard size={18} /> Proceed for Payment</button>
-                <button onClick={() => handleActivateSubscription(null, 'cash')} className="w-full py-4 bg-white text-slate-600 border-2 border-slate-100 rounded-2xl font-black text-sm hover:bg-slate-50 transition-all flex items-center justify-center gap-2"><span className="text-emerald-500 font-bold">₹</span> Paid as Cash</button>
+                <button onClick={() => handleActivateSubscription(null, 'online')} className="w-full py-4 text-white rounded-2xl font-black text-sm transition-all flex items-center justify-center gap-2 hover:opacity-90 active:scale-[0.98]" style={{ background: 'linear-gradient(135deg, #6366f1, #a855f7)', boxShadow: '0 6px 20px rgba(99,102,241,0.4)' }}><CreditCard size={18} /> Proceed for Payment</button>
+                <button onClick={() => handleActivateSubscription(null, 'cash')} className="w-full py-4 bg-white text-slate-600 border-2 border-slate-100 rounded-2xl font-black text-sm hover:bg-slate-50 transition-all flex items-center justify-center gap-2"><span className="text-emerald-500 font-black text-lg">₹</span> Paid as Cash</button>
               </div>
               <button onClick={() => setShowActivateModal(false)} className="w-full text-slate-400 font-bold text-xs uppercase tracking-widest hover:text-slate-600 transition-colors">Cancel Transaction</button>
             </div>
@@ -586,10 +702,8 @@ const getStatusInfo = (member) => {
 
       {previewImage && (
         <div className="fixed inset-0 z-[300] bg-slate-900/90 backdrop-blur-md flex items-center justify-center p-4 cursor-zoom-out" onClick={() => setPreviewImage(null)}>
-          <div className="relative animate-whatsapp-in" onClick={(e) => e.stopPropagation()}>
-            <button className="absolute -top-16 left-1/2 -translate-x-1/2 text-white/40 hover:text-white flex flex-col items-center" onClick={() => setPreviewImage(null)}>
-              <X size={32} strokeWidth={1.5} /><span className="text-[9px] font-bold tracking-[0.2em] mt-1 uppercase">Close</span>
-            </button>
+          <div className="relative animate-in zoom-in-95 duration-200" onClick={(e) => e.stopPropagation()}>
+            <button className="absolute -top-16 left-1/2 -translate-x-1/2 text-white/40 hover:text-white flex flex-col items-center" onClick={() => setPreviewImage(null)}><X size={32} strokeWidth={1.5} /><span className="text-[9px] font-bold tracking-[0.2em] mt-1 uppercase">Close</span></button>
             <div className="w-[300px] h-[300px] md:w-[380px] md:h-[380px] rounded-full border-[6px] border-white shadow-2xl overflow-hidden bg-slate-800"><img src={previewImage} alt="Profile" className="w-full h-full object-cover select-none" /></div>
           </div>
         </div>

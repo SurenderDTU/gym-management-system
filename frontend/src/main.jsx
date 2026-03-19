@@ -1,7 +1,60 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
+import axios from 'axios'
 import './index.css'
 import App from './App.jsx'
+
+const unwrapApiData = (payload) => {
+  let current = payload
+  let guard = 0
+
+  while (
+    current &&
+    typeof current === 'object' &&
+    !Array.isArray(current) &&
+    !(current instanceof Date) &&
+    Object.prototype.hasOwnProperty.call(current, 'data') &&
+    guard < 8
+  ) {
+    current = current.data
+    guard += 1
+  }
+
+  return current
+}
+
+const apiBaseUrl = (import.meta.env.VITE_API_URL || 'http://localhost:5000').trim()
+axios.defaults.baseURL = apiBaseUrl
+
+axios.interceptors.request.use((config) => {
+  const token = localStorage.getItem('token')
+  if (token && config.headers && !config.headers['x-auth-token'] && !config.headers.Authorization) {
+    config.headers['x-auth-token'] = token
+  }
+
+  return config
+})
+
+axios.interceptors.response.use((response) => {
+  response.data = unwrapApiData(response.data)
+  return response
+}, (error) => {
+  const status = error?.response?.status
+  const code = error?.response?.data?.code
+  const reqHeaders = error?.config?.headers || {}
+  const isSuperadminReq = Boolean(reqHeaders['x-super-token'])
+
+  if (status === 401 && (code === 'AUTH_INVALID' || code === 'AUTH_MISSING' || !isSuperadminReq)) {
+    localStorage.removeItem('token')
+    window.dispatchEvent(new CustomEvent('gymvault:auth-invalid', {
+      detail: {
+        message: error?.response?.data?.error || 'Session expired. Please login again.'
+      }
+    }))
+  }
+
+  return Promise.reject(error)
+})
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>

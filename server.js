@@ -1,9 +1,11 @@
 const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
-const { connectDB } = require('./config/db');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const { connectDB, pool } = require('./config/db');
 const fs = require('fs'); 
-const path = require('path'); // <--- ADD THIS
+const path = require('path');
 
 // Import Jobs and Middleware
 const checkExpirations = require('./jobs/expiryCheck');
@@ -17,24 +19,107 @@ const membershipRoutes = require('./routes/memberships');
 const paymentRoutes = require('./routes/payments');
 const attendanceRoutes = require('./routes/attendance');
 const dashboardRoutes = require('./routes/dashboard');
+const superAdminRoutes = require('./routes/superadmin');
+const settingsRoutes = require('./routes/settings');
+const billingRoutes = require('./routes/billing');
+const notificationRoutes = require('./routes/notifications');
+const supportRoutes = require('./routes/support');
 
 dotenv.config();
 const app = express();
 
+const requiredEnv = ['DB_USER', 'DB_PASSWORD', 'DB_HOST', 'DB_PORT', 'DB_NAME', 'JWT_SECRET'];
+const missingEnv = requiredEnv.filter((key) => !process.env[key]);
+if (missingEnv.length > 0) {
+    throw new Error(`FATAL: Missing required env vars: ${missingEnv.join(', ')}`);
+}
+if (process.env.JWT_SECRET === 'secret' || process.env.JWT_SECRET === 'gymvault_dev_secret_2026') {
+    throw new Error('FATAL: JWT_SECRET is insecure. Set a strong random secret in environment.');
+}
+
+const corsOrigins = (process.env.CORS_ORIGIN || '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+const isProduction = process.env.NODE_ENV === 'production';
+
+const corsOptions = corsOrigins.length > 0
+    ? {
+        origin: (origin, callback) => {
+            if (!origin || corsOrigins.includes(origin)) return callback(null, true);
+            return callback(new Error('Not allowed by CORS'));
+        }
+    }
+    : { origin: true };
+
 // Middleware
+app.use(helmet({
+    crossOriginResourcePolicy: { policy: 'cross-origin' }
+}));
 app.use(express.json());
-app.use(cors());
+app.use(cors(corsOptions));
+
+const apiLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: isProduction ? 600 : 5000,
+    standardHeaders: true,
+    legacyHeaders: false,
+    handler: (req, res) => {
+        const resetTimeMs = req.rateLimit?.resetTime ? new Date(req.rateLimit.resetTime).getTime() : Date.now() + (15 * 60 * 1000);
+        const retryAfterSeconds = Math.max(1, Math.ceil((resetTimeMs - Date.now()) / 1000));
+        return res.status(429).json({
+            success: false,
+            data: null,
+            error: `Too many requests. Please retry in about ${retryAfterSeconds} seconds.`,
+            code: 'RATE_LIMITED',
+            retry_after_seconds: retryAfterSeconds,
+        });
+    },
+});
+
+const authLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: isProduction ? 25 : 500,
+    standardHeaders: true,
+    legacyHeaders: false,
+    skipSuccessfulRequests: true,
+    handler: (req, res) => {
+        const resetTimeMs = req.rateLimit?.resetTime ? new Date(req.rateLimit.resetTime).getTime() : Date.now() + (15 * 60 * 1000);
+        const retryAfterSeconds = Math.max(1, Math.ceil((resetTimeMs - Date.now()) / 1000));
+        return res.status(429).json({
+            success: false,
+            data: null,
+            error: `Too many login attempts. Please retry in about ${retryAfterSeconds} seconds.`,
+            message: `Too many login attempts. Please retry in about ${retryAfterSeconds} seconds.`,
+            code: 'LOGIN_RATE_LIMITED',
+            retry_after_seconds: retryAfterSeconds,
+        });
+    },
+});
+
+app.use('/api/', (req, res, next) => {
+    if (req.path === '/auth/login' || req.path === '/superadmin/login') {
+        return next();
+    }
+    return apiLimiter(req, res, next);
+});
+app.use('/api/auth/login', authLimiter);
+app.use('/api/superadmin/login', authLimiter);
+
+// Serve static files from the 'uploads' directory
+// This makes http://localhost:5000/uploads/profiles/image.jpg accessible
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 app.use('/api/users', require('./routes/users'));
 
 // Database Connection
 connectDB();
 
-// Create uploads folder if missing
+// Create uploads folder structure if missing
 const uploadDir = './uploads';
-if (!fs.existsSync(uploadDir)){
-    fs.mkdirSync(uploadDir);
-}
+const profileDir = './uploads/profiles';
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
+if (!fs.existsSync(profileDir)) fs.mkdirSync(profileDir);
 
 // Routes
 app.use('/api/auth', authRoutes);
@@ -44,19 +129,33 @@ app.use('/api/memberships', membershipRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/attendance', attendanceRoutes);
 app.use('/api/dashboard', dashboardRoutes);
-
-// --- IMAGE LOADING FIX ---
-// Use path.join to make it work on Windows/Mac/Linux
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use('/api/superadmin', superAdminRoutes); 
+app.use('/api/settings', settingsRoutes);
+app.use('/api/billing', billingRoutes);
+app.use('/api/notifications', notificationRoutes);
+app.use('/api/support', supportRoutes);
 
 // Auth Status Check
-app.get('/api/auth/me', auth, (req, res) => {
-    res.json({
-        message: "You are authorized!",
-        your_user_id: req.user.user_id,
-        your_gym_id: req.user.gym_id,
-        your_role: req.user.role
-    });
+app.get('/api/auth/me', auth, async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT id, gym_id, full_name, email, role, staff_role, is_active, permissions
+             FROM users
+             WHERE id = $1`,
+            [req.user.id]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        return res.json({
+            user: result.rows[0],
+        });
+    } catch (err) {
+        console.error('AUTH ME ERROR:', err.message);
+        return res.status(500).json({ error: 'Server Error' });
+    }
 });
 
 app.get('/', (req, res) => {

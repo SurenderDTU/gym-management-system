@@ -1,67 +1,783 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
+import {
+  Activity,
+  AlertTriangle,
+  CalendarDays,
+  Fingerprint,
+  QrCode,
+  Search,
+  Shield,
+  Smartphone,
+  Users,
+  MessageSquare,
+} from 'lucide-react';
+import { BarChart, Bar, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 
-function AttendancePage({ token }) {
-  const [memberId, setMemberId] = useState('');
-  const [message, setMessage] = useState(null);
-  const [isError, setIsError] = useState(false);
+const MODE_META = {
+  STAFF: {
+    label: 'Staff Check-In',
+    icon: Users,
+    desc: 'Reception marks attendance manually.',
+    color: 'from-indigo-500 to-violet-500',
+  },
+  QR: {
+    label: 'QR Code Check-In',
+    icon: QrCode,
+    desc: 'Member identity verified using QR flow.',
+    color: 'from-emerald-500 to-teal-500',
+  },
+  SELF: {
+    label: 'Self Check-In (Mobile)',
+    icon: Smartphone,
+    desc: 'Member checks in via app with location checks.',
+    color: 'from-sky-500 to-blue-500',
+  },
+  RFID: {
+    label: 'RFID / Biometric',
+    icon: Fingerprint,
+    desc: 'Hardware-triggered check-in with backend validation.',
+    color: 'from-rose-500 to-pink-500',
+  },
+};
 
-  const handleCheckIn = async (e) => {
-    e.preventDefault();
-    setMessage(null);
+const methodBadge = (method) => {
+  const key = String(method || 'STAFF').toUpperCase();
+  const styles = {
+    STAFF: 'bg-indigo-100 text-indigo-700',
+    QR: 'bg-emerald-100 text-emerald-700',
+    SELF: 'bg-sky-100 text-sky-700',
+    RFID: 'bg-rose-100 text-rose-700',
+  };
+  return styles[key] || 'bg-slate-100 text-slate-700';
+};
+
+const statusBadge = (status) => {
+  const key = String(status || '').toUpperCase();
+  if (key === 'ACTIVE') return 'bg-emerald-100 text-emerald-700';
+  if (key === 'EXPIRED') return 'bg-rose-100 text-rose-700';
+  if (key === 'UNPAID') return 'bg-amber-100 text-amber-700';
+  return 'bg-slate-100 text-slate-700';
+};
+
+const formatDateTime = (value) => {
+  if (!value) return '—';
+  const date = new Date(value);
+  return `${date.toLocaleDateString('en-GB')} · ${date.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}`;
+};
+
+const unwrapApiData = (payload) => {
+  if (payload && typeof payload === 'object' && 'data' in payload) {
+    return unwrapApiData(payload.data);
+  }
+  return payload;
+};
+
+const asArray = (value) => (Array.isArray(value) ? value : []);
+
+const asObject = (value, fallback = {}) => (
+  value && typeof value === 'object' && !Array.isArray(value) ? value : fallback
+);
+
+const HeatmapCell = ({ count }) => {
+  let bg = 'bg-slate-100';
+  if (count > 0) bg = 'bg-indigo-100';
+  if (count >= 4) bg = 'bg-indigo-300';
+  if (count >= 8) bg = 'bg-indigo-500';
+  if (count >= 12) bg = 'bg-indigo-700';
+
+  return <div className={`h-3.5 w-3.5 rounded-[3px] ${bg}`} title={`${count} check-ins`} />;
+};
+
+function AttendancePage({ token, toast }) {
+  const headers = useMemo(() => ({ headers: { 'x-auth-token': token } }), [token]);
+
+  const [overview, setOverview] = useState({
+    today_checkins: 0,
+    yesterday_checkins: 0,
+    active_members_today: 0,
+    peak_hour_today: null,
+    peak_hour_count: 0,
+  });
+  const [modeSettings, setModeSettings] = useState({
+    attendance_mode: 'STAFF',
+    attendance_geo_enabled: false,
+    gym_latitude: '',
+    gym_longitude: '',
+    gym_radius_meters: 200,
+    allow_expired_checkin: false,
+  });
+
+  const [loading, setLoading] = useState(true);
+  const [busyCheckin, setBusyCheckin] = useState(false);
+  const [busySaveMode, setBusySaveMode] = useState(false);
+
+  const [searchText, setSearchText] = useState('');
+  const [searchResults, setSearchResults] = useState([]);
+  const [selectedMember, setSelectedMember] = useState(null);
+
+  const [checkinMethod, setCheckinMethod] = useState('STAFF');
+  const [checkinNote, setCheckinNote] = useState('');
+
+  const [feed, setFeed] = useState([]);
+  const [records, setRecords] = useState([]);
+  const [feedView, setFeedView] = useState('live');
+  const [range, setRange] = useState('today');
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
+
+  const [heatmap, setHeatmap] = useState([]);
+  const [peakHours, setPeakHours] = useState([]);
+  const [inactiveDays, setInactiveDays] = useState(7);
+  const [inactiveMembers, setInactiveMembers] = useState([]);
+  const [leaderboard, setLeaderboard] = useState([]);
+
+  const [warningState, setWarningState] = useState(null);
+
+  const peakHourLabel = overview.peak_hour_today === null
+    ? '—'
+    : `${String(overview.peak_hour_today).padStart(2, '0')}:00`;
+
+  const loadOverviewBundle = async () => {
+    const [overviewRes, feedRes, heatmapRes, peakRes, modeRes] = await Promise.all([
+      axios.get('/api/attendance/overview', headers),
+      axios.get('/api/attendance/feed?limit=25', headers),
+      axios.get('/api/attendance/heatmap?days=84', headers),
+      axios.get('/api/attendance/peak-hours?days=30', headers),
+      axios.get('/api/attendance/mode', headers),
+    ]);
+
+    setOverview(asObject(unwrapApiData(overviewRes.data), {}));
+    setFeed(asArray(unwrapApiData(feedRes.data)));
+    setHeatmap(asArray(unwrapApiData(heatmapRes.data)));
+    setPeakHours(
+      asArray(unwrapApiData(peakRes.data)).map((item) => ({
+        hourLabel: `${String(item.hour).padStart(2, '0')}:00`,
+        count: item.count || 0,
+      }))
+    );
+
+    const modeData = asObject(unwrapApiData(modeRes.data), {});
+    setModeSettings((prev) => ({
+      ...prev,
+      attendance_mode: modeData.attendance_mode || 'STAFF',
+      attendance_geo_enabled: Boolean(modeData.attendance_geo_enabled),
+      gym_latitude: modeData.gym_latitude ?? '',
+      gym_longitude: modeData.gym_longitude ?? '',
+      gym_radius_meters: modeData.gym_radius_meters || 200,
+      allow_expired_checkin: Boolean(modeData.allow_expired_checkin),
+    }));
+
+    setCheckinMethod(modeData.attendance_mode || 'STAFF');
+  };
+
+  const loadRecords = async () => {
+    let url = `/api/attendance/records?range=${range}`;
+    if (range === 'custom' && fromDate && toDate) {
+      url += `&from=${fromDate}&to=${toDate}`;
+    }
+    const res = await axios.get(url, headers);
+    setRecords(asArray(unwrapApiData(res.data)));
+  };
+
+  const loadInactive = async () => {
+    const res = await axios.get(`/api/attendance/inactive?days=${inactiveDays}`, headers);
+    setInactiveMembers(asArray(unwrapApiData(res.data)));
+  };
+
+  const loadLeaderboard = async () => {
+    const res = await axios.get('/api/attendance/leaderboard?days=30&limit=6', headers);
+    setLeaderboard(asArray(unwrapApiData(res.data)));
+  };
+
+  const loadAll = async () => {
+    if (!token) return;
+    setLoading(true);
     try {
-      const res = await axios.post('http://localhost:5000/api/attendance/checkin', 
-        { member_id: memberId },
-        { headers: { 'x-auth-token': token } }
-      );
-      setMessage(res.data.message);
-      setIsError(false);
-      setMemberId(''); // Clear input on success
-    } catch (err) {
-      setMessage(err.response?.data?.message || "Check-in Failed");
-      setIsError(true);
+      await Promise.all([loadOverviewBundle(), loadRecords(), loadInactive(), loadLeaderboard()]);
+    } catch (_err) {
+      toast?.('Failed to load attendance dashboard.', 'error');
+    } finally {
+      setLoading(false);
     }
   };
 
+  useEffect(() => {
+    loadAll();
+  }, [token]);
+
+  useEffect(() => {
+    if (!token) return;
+    loadRecords().catch(() => toast?.('Failed to load attendance table.', 'error'));
+  }, [range, fromDate, toDate]);
+
+  useEffect(() => {
+    if (!token) return;
+    loadInactive().catch(() => toast?.('Failed to load inactive members.', 'error'));
+  }, [inactiveDays]);
+
+  useEffect(() => {
+    if (!token) return;
+    const q = searchText.trim();
+    if (q.length < 2) {
+      setSearchResults([]);
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      try {
+        const res = await axios.get(`/api/attendance/search?q=${encodeURIComponent(q)}`, headers);
+        setSearchResults(asArray(unwrapApiData(res.data)));
+      } catch (_err) {
+        setSearchResults([]);
+      }
+    }, 220);
+
+    return () => clearTimeout(timer);
+  }, [searchText, token]);
+
+  const saveModeSettings = async () => {
+    setBusySaveMode(true);
+    try {
+      await axios.put('/api/attendance/mode', modeSettings, headers);
+      toast?.('Attendance mode settings saved.', 'success');
+      await loadOverviewBundle();
+    } catch (_err) {
+      toast?.('Failed to save attendance mode settings.', 'error');
+    } finally {
+      setBusySaveMode(false);
+    }
+  };
+
+  const submitCheckin = async (allowOverride = false) => {
+    if (!selectedMember?.id) {
+      toast?.('Select a member first.', 'warning');
+      return;
+    }
+
+    setBusyCheckin(true);
+    try {
+      const checkinPayload = {
+        member_id: selectedMember.id,
+        method: checkinMethod,
+        notes: checkinNote,
+        allow_override: allowOverride,
+      };
+
+      if (checkinMethod === 'SELF' && navigator.geolocation) {
+        try {
+          const position = await new Promise((resolve, reject) => {
+            navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 5000 });
+          });
+          checkinPayload.latitude = position.coords.latitude;
+          checkinPayload.longitude = position.coords.longitude;
+        } catch (_geoErr) {
+          // Do not block submission if geo read fails; backend will decide by settings.
+        }
+      }
+
+      const res = await axios.post('/api/attendance/checkin', checkinPayload, headers);
+      const payload = asObject(unwrapApiData(res.data), {});
+      if (payload.warning) {
+        toast?.(payload.warning, 'warning');
+      } else {
+        toast?.(payload.message || 'Check-in successful!', 'success');
+      }
+
+      setWarningState(null);
+      setCheckinNote('');
+      await Promise.all([loadOverviewBundle(), loadRecords(), loadInactive(), loadLeaderboard()]);
+    } catch (err) {
+      const errorBody = asObject(err?.response?.data, {});
+      const code = errorBody.code;
+      if (code === 'ATTENDANCE_BLOCKED') {
+        setWarningState({
+          message: errorBody.message || errorBody.error || 'Membership is not active.',
+          warning: errorBody.warning || '',
+          member: errorBody.member || selectedMember,
+        });
+      } else {
+        toast?.(errorBody.message || errorBody.error || 'Check-in failed.', 'error');
+      }
+    } finally {
+      setBusyCheckin(false);
+    }
+  };
+
+  const sendReminder = (member) => {
+    const msg = `Hi ${member.full_name}, we missed you at the gym. It has been ${member.days_inactive} days since your last visit. Come back and continue your fitness streak!`;
+    window.open(`https://wa.me/91${member.phone}?text=${encodeURIComponent(msg)}`, '_blank');
+  };
+
+  const attendanceStreak = useMemo(() => {
+    const uniqueDays = new Set(feed.map((item) => new Date(item.check_in_time).toDateString()));
+    return uniqueDays.size;
+  }, [feed]);
+
+  const avgVisitsPerWeek = useMemo(() => {
+    if (!heatmap.length) return 0;
+    const total = heatmap.reduce((sum, d) => sum + (d.count || 0), 0);
+    const weeks = Math.max(1, Math.round(heatmap.length / 7));
+    return (total / weeks).toFixed(1);
+  }, [heatmap]);
+
+  if (loading) {
+    return <div className="p-8 text-center text-slate-400 font-bold animate-pulse">Loading attendance intelligence...</div>;
+  }
+
   return (
-    <div className="p-8 max-w-2xl mx-auto">
-      <div className="text-center mb-10">
-        <h1 className="text-3xl font-bold">Member Check-in</h1>
-        <p className="text-slate-500">Enter Member ID to log attendance</p>
+    <div className="space-y-5 p-2">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="bg-white/80 backdrop-blur-sm rounded-2xl border border-white/70 p-4">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Today's Check-ins</p>
+          <h3 className="text-3xl font-black text-slate-900 mt-1">{overview.today_checkins || 0}</h3>
+        </div>
+        <div className="bg-white/80 backdrop-blur-sm rounded-2xl border border-white/70 p-4">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Yesterday</p>
+          <h3 className="text-3xl font-black text-slate-900 mt-1">{overview.yesterday_checkins || 0}</h3>
+        </div>
+        <div className="bg-white/80 backdrop-blur-sm rounded-2xl border border-white/70 p-4">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Active Members Today</p>
+          <h3 className="text-3xl font-black text-emerald-600 mt-1">{overview.active_members_today || 0}</h3>
+        </div>
+        <div className="bg-white/80 backdrop-blur-sm rounded-2xl border border-white/70 p-4">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Peak Hour Today</p>
+          <h3 className="text-3xl font-black text-indigo-600 mt-1">{peakHourLabel}</h3>
+          <p className="text-xs font-bold text-slate-400 mt-1">{overview.peak_hour_count || 0} check-ins</p>
+        </div>
       </div>
 
-      <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
-        <form onSubmit={handleCheckIn} className="space-y-6">
-          <div>
-            <label className="block text-sm font-bold text-slate-700 mb-2">Member ID</label>
-            <input 
-              type="text" 
-              placeholder="e.g. 5"
-              className="w-full border border-slate-200 p-4 rounded-2xl text-xl outline-none focus:ring-2 focus:ring-slate-900"
-              value={memberId}
-              onChange={(e) => setMemberId(e.target.value)}
-              required
+      <div className="bg-white/80 backdrop-blur-sm rounded-[24px] border border-white/70 p-5">
+        <div className="flex items-center gap-2 mb-4">
+          <Shield size={18} className="text-indigo-500" />
+          <h3 className="text-sm font-black text-slate-900 uppercase tracking-wider">Attendance Mode</h3>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+          {Object.entries(MODE_META).map(([key, item]) => {
+            const Icon = item.icon;
+            const active = modeSettings.attendance_mode === key;
+            return (
+              <button
+                key={key}
+                onClick={() => {
+                  setModeSettings((prev) => ({ ...prev, attendance_mode: key }));
+                  setCheckinMethod(key);
+                }}
+                className={`text-left p-4 rounded-2xl border transition-all ${active ? 'border-indigo-400 bg-indigo-50/70' : 'border-slate-200 hover:border-slate-300 bg-white'}`}
+              >
+                <div className={`w-9 h-9 rounded-xl bg-gradient-to-br ${item.color} text-white flex items-center justify-center mb-3`}>
+                  <Icon size={17} />
+                </div>
+                <p className="text-sm font-black text-slate-900">{item.label}</p>
+                <p className="text-xs text-slate-500 font-medium mt-1">{item.desc}</p>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 mt-4">
+          <label className="flex items-center justify-between p-3 rounded-xl border border-slate-200 bg-white">
+            <span className="text-sm font-bold text-slate-700">Allow expired/unpaid override</span>
+            <input
+              type="checkbox"
+              checked={modeSettings.allow_expired_checkin}
+              onChange={(e) => setModeSettings((prev) => ({ ...prev, allow_expired_checkin: e.target.checked }))}
+            />
+          </label>
+          <label className="flex items-center justify-between p-3 rounded-xl border border-slate-200 bg-white">
+            <span className="text-sm font-bold text-slate-700">Enable geo radius for SELF mode</span>
+            <input
+              type="checkbox"
+              checked={modeSettings.attendance_geo_enabled}
+              onChange={(e) => setModeSettings((prev) => ({ ...prev, attendance_geo_enabled: e.target.checked }))}
+            />
+          </label>
+        </div>
+
+        {modeSettings.attendance_geo_enabled && (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-3">
+            <input
+              type="number"
+              step="0.000001"
+              placeholder="Gym latitude"
+              value={modeSettings.gym_latitude}
+              onChange={(e) => setModeSettings((prev) => ({ ...prev, gym_latitude: e.target.value }))}
+              className="px-3 py-2.5 rounded-xl border border-slate-200 bg-white text-sm font-semibold"
+            />
+            <input
+              type="number"
+              step="0.000001"
+              placeholder="Gym longitude"
+              value={modeSettings.gym_longitude}
+              onChange={(e) => setModeSettings((prev) => ({ ...prev, gym_longitude: e.target.value }))}
+              className="px-3 py-2.5 rounded-xl border border-slate-200 bg-white text-sm font-semibold"
+            />
+            <input
+              type="number"
+              min="50"
+              placeholder="Radius meters"
+              value={modeSettings.gym_radius_meters}
+              onChange={(e) => setModeSettings((prev) => ({ ...prev, gym_radius_meters: e.target.value }))}
+              className="px-3 py-2.5 rounded-xl border border-slate-200 bg-white text-sm font-semibold"
             />
           </div>
-          <button 
-            type="submit" 
-            className="w-full py-4 bg-slate-900 text-white rounded-2xl font-bold text-lg hover:bg-slate-800 transition shadow-lg"
-          >
-            Check In
-          </button>
-        </form>
+        )}
 
-        {message && (
-          <div className={`mt-8 p-4 rounded-2xl text-center font-bold ${isError ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'}`}>
-            {message}
+        <div className="mt-4">
+          <button
+            onClick={saveModeSettings}
+            disabled={busySaveMode}
+            className="px-5 py-2.5 rounded-xl bg-slate-900 text-white text-sm font-bold hover:bg-slate-800 disabled:opacity-60"
+          >
+            {busySaveMode ? 'Saving...' : 'Save Mode Settings'}
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-5">
+        <div className="xl:col-span-1 bg-white/80 backdrop-blur-sm rounded-[24px] border border-white/70 p-5">
+          <h3 className="text-sm font-black uppercase tracking-wider text-slate-900 mb-3">Quick Check-In Panel</h3>
+
+          <div className="relative mb-3">
+            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input
+              value={searchText}
+              onChange={(e) => setSearchText(e.target.value)}
+              placeholder="Search member name / phone"
+              className="w-full pl-9 pr-3 py-2.5 rounded-xl border border-slate-200 bg-white text-sm font-semibold"
+            />
+          </div>
+
+          {searchResults.length > 0 && (
+            <div className="mb-3 border border-slate-200 rounded-xl max-h-44 overflow-y-auto">
+              {searchResults.map((m) => (
+                <button
+                  key={m.id}
+                  onClick={() => {
+                    setSelectedMember(m);
+                    setSearchText(m.full_name);
+                    setSearchResults([]);
+                  }}
+                  className="w-full text-left px-3 py-2.5 hover:bg-slate-50 border-b border-slate-100 last:border-b-0"
+                >
+                  <p className="text-sm font-bold text-slate-900">{m.full_name}</p>
+                  <p className="text-xs text-slate-500 font-medium">{m.phone} · {m.plan_name || 'No plan'}</p>
+                </button>
+              ))}
+            </div>
+          )}
+
+          <div className="mb-3">
+            <label className="text-xs font-bold text-slate-500">Method</label>
+            <select
+              value={checkinMethod}
+              onChange={(e) => setCheckinMethod(e.target.value)}
+              className="w-full mt-1 px-3 py-2.5 rounded-xl border border-slate-200 bg-white text-sm font-semibold"
+            >
+              <option value="STAFF">Staff</option>
+              <option value="QR">QR</option>
+              <option value="SELF">Self (Mobile)</option>
+              <option value="RFID">RFID/Biometric</option>
+            </select>
+          </div>
+
+          <textarea
+            value={checkinNote}
+            onChange={(e) => setCheckinNote(e.target.value)}
+            rows={2}
+            placeholder="Optional note"
+            className="w-full px-3 py-2.5 rounded-xl border border-slate-200 bg-white text-sm font-semibold resize-none"
+          />
+
+          <div className="mt-4">
+            <button
+              onClick={() => submitCheckin(false)}
+              disabled={!selectedMember || busyCheckin}
+              className="w-full py-3 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 text-white text-sm font-black disabled:opacity-60"
+            >
+              {busyCheckin ? 'Checking in...' : 'Check In Member'}
+            </button>
+          </div>
+
+          {selectedMember && (
+            <div className="mt-4 p-3 rounded-xl border border-slate-200 bg-slate-50/60">
+              <p className="text-sm font-black text-slate-900 mb-2">Member Snapshot</p>
+              <div className="space-y-1.5 text-xs font-semibold text-slate-600">
+                <p><span className="text-slate-400">Name:</span> {selectedMember.full_name}</p>
+                <p><span className="text-slate-400">Plan:</span> {selectedMember.plan_name || 'No active plan'}</p>
+                <p><span className="text-slate-400">Status:</span> <span className={`px-1.5 py-0.5 rounded-full ml-1 ${statusBadge(selectedMember.membership_status)}`}>{selectedMember.membership_status || 'UNPAID'}</span></p>
+                <p><span className="text-slate-400">Last Visit:</span> {selectedMember.last_visit ? formatDateTime(selectedMember.last_visit) : 'Never'}</p>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="xl:col-span-2 bg-white/80 backdrop-blur-sm rounded-[24px] border border-white/70 p-5">
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+            <h3 className="text-sm font-black uppercase tracking-wider text-slate-900">Live Feed + Records</h3>
+            <div className="flex items-center gap-2">
+              <div className="flex bg-slate-100 rounded-lg p-1">
+                <button
+                  onClick={() => setFeedView('live')}
+                  className={`px-3 py-1.5 rounded-md text-[11px] font-black uppercase tracking-wider transition ${feedView === 'live' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                >
+                  Live
+                </button>
+                <button
+                  onClick={() => setFeedView('records')}
+                  className={`px-3 py-1.5 rounded-md text-[11px] font-black uppercase tracking-wider transition ${feedView === 'records' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                >
+                  Records
+                </button>
+              </div>
+              <button
+                onClick={async () => {
+                  await Promise.all([loadOverviewBundle(), loadRecords()]);
+                }}
+                className="text-xs font-bold text-indigo-600 hover:text-indigo-800"
+              >
+                Refresh
+              </button>
+            </div>
+          </div>
+
+          {feedView === 'live' ? (
+            <div className="space-y-2.5 max-h-96 overflow-y-auto pr-1">
+              {feed.length === 0 ? (
+                <div className="py-10 text-center text-sm font-bold text-slate-400">No live check-ins yet.</div>
+              ) : (
+                feed.map((entry) => (
+                  <div key={entry.id} className="flex items-center justify-between border border-slate-100 rounded-xl p-3 bg-white">
+                    <div className="min-w-0">
+                      <p className="text-sm font-black text-slate-900 truncate">{entry.full_name}</p>
+                      <p className="text-xs font-medium text-slate-500">{formatDateTime(entry.check_in_time)} {entry.staff_name ? `· Staff: ${entry.staff_name}` : ''}</p>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0 ml-3">
+                      <span className={`px-2 py-1 rounded-full text-[10px] font-black ${methodBadge(entry.checkin_method)}`}>{entry.checkin_method}</span>
+                      {entry.was_override ? <span className="px-2 py-1 rounded-full text-[10px] font-black bg-amber-100 text-amber-700">OVERRIDE</span> : null}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          ) : (
+            <div>
+              <div className="flex flex-wrap items-center gap-2 justify-end mb-4">
+                <div className="flex flex-wrap items-center gap-2">
+                  <select value={range} onChange={(e) => setRange(e.target.value)} className="px-3 py-2 rounded-lg border border-slate-200 text-sm font-semibold">
+                    <option value="today">Today</option>
+                    <option value="yesterday">Yesterday</option>
+                    <option value="custom">Date Range</option>
+                  </select>
+                  {range === 'custom' && (
+                    <>
+                      <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} className="px-3 py-2 rounded-lg border border-slate-200 text-sm" />
+                      <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} className="px-3 py-2 rounded-lg border border-slate-200 text-sm" />
+                    </>
+                  )}
+                </div>
+              </div>
+
+              <div className="overflow-x-auto max-h-96 overflow-y-auto">
+                <table className="w-full min-w-[980px] text-sm">
+                  <thead>
+                    <tr className="text-left text-[10px] uppercase tracking-wider text-slate-400 border-b border-slate-100">
+                      <th className="py-3 px-2">Member</th>
+                      <th className="py-3 px-2">Check-In Time</th>
+                      <th className="py-3 px-2">Plan</th>
+                      <th className="py-3 px-2">Status</th>
+                      <th className="py-3 px-2">Method</th>
+                      <th className="py-3 px-2">Staff</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {records.length === 0 ? (
+                      <tr>
+                        <td colSpan={6} className="py-8 text-center text-slate-400 font-bold">No records found for selected range.</td>
+                      </tr>
+                    ) : (
+                      records.map((row) => (
+                        <tr key={row.id} className="border-b border-slate-50">
+                          <td className="py-3 px-2 font-bold text-slate-900">{row.member_name}</td>
+                          <td className="py-3 px-2 font-semibold text-slate-600">{formatDateTime(row.check_in_time)}</td>
+                          <td className="py-3 px-2 font-semibold text-slate-700">{row.plan_name || '—'}</td>
+                          <td className="py-3 px-2"><span className={`px-2 py-1 rounded-full text-[10px] font-black ${statusBadge(row.membership_status)}`}>{row.membership_status || 'UNPAID'}</span></td>
+                          <td className="py-3 px-2"><span className={`px-2 py-1 rounded-full text-[10px] font-black ${methodBadge(row.checkin_method)}`}>{row.checkin_method}</span></td>
+                          <td className="py-3 px-2 font-semibold text-slate-600">{row.staff_name || 'System'}</td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
+        <div className="bg-white/80 backdrop-blur-sm rounded-[24px] border border-white/70 p-5">
+          <div className="flex items-center gap-2 mb-3">
+            <CalendarDays size={16} className="text-indigo-500" />
+            <h3 className="text-sm font-black uppercase tracking-wider text-slate-900">Attendance Heatmap</h3>
+          </div>
+          <div className="overflow-x-auto">
+            <div className="grid grid-rows-7 grid-flow-col gap-1 min-w-[620px]">
+              {heatmap.map((d, idx) => (
+                <HeatmapCell key={`${d.date}-${idx}`} count={d.count || 0} />
+              ))}
+            </div>
+          </div>
+          <div className="mt-3 text-xs text-slate-500 font-semibold">Lighter = low traffic, darker = peak traffic.</div>
+        </div>
+
+        <div className="bg-white/80 backdrop-blur-sm rounded-[24px] border border-white/70 p-5">
+          <div className="flex items-center gap-2 mb-3">
+            <Activity size={16} className="text-indigo-500" />
+            <h3 className="text-sm font-black uppercase tracking-wider text-slate-900">Peak Hour Analysis (30D)</h3>
+          </div>
+          <div className="h-[260px] min-h-[260px] w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={peakHours} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#eef2ff" />
+                <XAxis dataKey="hourLabel" tick={{ fontSize: 10, fill: '#94a3b8', fontWeight: 700 }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fontSize: 10, fill: '#94a3b8', fontWeight: 700 }} axisLine={false} tickLine={false} />
+                <Tooltip />
+                <Bar dataKey="count" fill="#6366f1" radius={[5, 5, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-white/80 backdrop-blur-sm rounded-[24px] border border-white/70 p-5">
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+          <h3 className="text-sm font-black uppercase tracking-wider text-slate-900">Inactive Members (Retention Risk)</h3>
+          <div className="flex items-center gap-2">
+            {[7, 14, 30].map((d) => (
+              <button
+                key={d}
+                onClick={() => setInactiveDays(d)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold ${inactiveDays === d ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600'}`}
+              >
+                {d}D
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+          {inactiveMembers.length === 0 ? (
+            <div className="col-span-full py-8 text-center text-slate-400 font-bold">No inactive active-members in this range.</div>
+          ) : (
+            inactiveMembers.map((m) => (
+              <div key={m.id} className="p-3 rounded-xl border border-slate-100 bg-white flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="text-sm font-black text-slate-900 truncate">{m.full_name}</p>
+                  <p className="text-xs text-slate-500 font-medium truncate">{m.plan_name || 'No plan'} · {m.days_inactive} days inactive</p>
+                </div>
+                <button
+                  onClick={() => sendReminder(m)}
+                  className="px-3 py-2 rounded-lg bg-emerald-50 text-emerald-700 text-xs font-black hover:bg-emerald-100 flex items-center gap-1"
+                >
+                  <MessageSquare size={12} /> Remind
+                </button>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="bg-white/80 backdrop-blur-sm rounded-2xl border border-white/70 p-4">
+          <p className="text-[10px] uppercase tracking-wider font-bold text-slate-400">Visit Streak (Recent)</p>
+          <h4 className="text-2xl font-black text-slate-900 mt-1">{attendanceStreak} day slots</h4>
+        </div>
+        <div className="bg-white/80 backdrop-blur-sm rounded-2xl border border-white/70 p-4">
+          <p className="text-[10px] uppercase tracking-wider font-bold text-slate-400">Avg Visits / Week</p>
+          <h4 className="text-2xl font-black text-indigo-600 mt-1">{avgVisitsPerWeek}</h4>
+        </div>
+        <div className="bg-white/80 backdrop-blur-sm rounded-2xl border border-white/70 p-4">
+          <p className="text-[10px] uppercase tracking-wider font-bold text-slate-400">Anti-Abuse Rule</p>
+          <h4 className="text-sm font-black text-slate-900 mt-2">Duplicate check-ins blocked for 10 minutes</h4>
+        </div>
+      </div>
+
+      <div className="bg-white/80 backdrop-blur-sm rounded-[24px] border border-white/70 p-5">
+        <h3 className="text-sm font-black uppercase tracking-wider text-slate-900 mb-4">Engagement Leaderboard (30D)</h3>
+        {leaderboard.length === 0 ? (
+          <div className="py-6 text-center text-slate-400 font-bold text-sm">No leaderboard data yet.</div>
+        ) : (
+          <div className="space-y-2.5">
+            {leaderboard.map((item, idx) => {
+              const topVisits = Number(leaderboard[0]?.visits || 0);
+              const itemVisits = Number(item.visits || 0);
+              const widthPercent = topVisits > 0 ? Math.max(8, Math.round((itemVisits / topVisits) * 100)) : 8;
+
+              return (
+                <div key={item.id} className="p-3 rounded-xl border border-slate-100 bg-white">
+                  <div className="flex items-center justify-between gap-3 mb-2">
+                    <div className="min-w-0 flex items-center gap-2.5">
+                      <span className="w-7 h-7 rounded-full bg-indigo-50 text-indigo-700 text-xs font-black flex items-center justify-center shrink-0">
+                        {idx + 1}
+                      </span>
+                      <div className="min-w-0">
+                        <p className="text-sm font-black text-slate-900 truncate">{item.full_name}</p>
+                        <p className="text-xs text-slate-500 font-semibold">Last visit: {formatDateTime(item.last_check_in)}</p>
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <p className="text-base font-black text-indigo-600 leading-none">{itemVisits}</p>
+                      <p className="text-[10px] uppercase tracking-wider text-slate-400 font-bold mt-1">visits</p>
+                    </div>
+                  </div>
+
+                  <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
+                    <div
+                      className="h-full rounded-full"
+                      style={{ width: `${widthPercent}%`, background: 'linear-gradient(90deg, #6366f1, #8b5cf6)' }}
+                    />
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
 
-      <div className="mt-10 bg-slate-100 p-6 rounded-3xl border border-dashed border-slate-300">
-        <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wider mb-2">Pro Tip</h3>
-        <p className="text-slate-600 text-sm">In production, this screen would connect to a barcode scanner or RFID reader to automate the ID entry.</p>
-      </div>
+      {warningState && (
+        <div className="fixed inset-0 z-[220] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-[24px] max-w-md w-full p-6 border border-slate-200 shadow-2xl">
+            <div className="flex items-center gap-2 text-rose-600 mb-2">
+              <AlertTriangle size={18} />
+              <p className="font-black">Membership Warning</p>
+            </div>
+            <p className="text-sm font-semibold text-slate-700">{warningState.message}</p>
+            {warningState.warning ? <p className="text-xs text-slate-500 mt-2">{warningState.warning}</p> : null}
+
+            <div className="mt-4 p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs font-semibold text-slate-600">
+              <p><span className="text-slate-400">Member:</span> {warningState.member?.full_name}</p>
+              <p><span className="text-slate-400">Status:</span> {warningState.member?.membership_status || 'UNPAID'}</p>
+              <p><span className="text-slate-400">Plan:</span> {warningState.member?.plan_name || 'No plan'}</p>
+            </div>
+
+            <div className="flex gap-2 mt-5">
+              <button
+                onClick={() => setWarningState(null)}
+                className="flex-1 py-2.5 rounded-xl border border-slate-300 text-slate-600 text-sm font-bold hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => submitCheckin(true)}
+                className="flex-1 py-2.5 rounded-xl bg-amber-500 text-white text-sm font-black hover:bg-amber-600"
+              >
+                Override Check-In
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

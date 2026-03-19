@@ -1,0 +1,915 @@
+const express = require('express');
+const router = express.Router();
+const jwt = require('jsonwebtoken');
+const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
+const { pool } = require('../config/db');
+
+const fallbackDevPassword = 'admin123';
+const masterPassword = process.env.MASTER_PASSWORD || process.env.SUPERADMIN_PASSWORD || fallbackDevPassword;
+const superadminEnabled = Boolean(masterPassword);
+const disabledMessage = `Superadmin is disabled. Set MASTER_PASSWORD to enable it. Dev fallback is "${fallbackDevPassword}".`;
+
+const toBool = (value) => String(value || '').toLowerCase() === 'true';
+
+const getClientIp = (req) => {
+    const forwarded = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+    return forwarded || req.ip || req.connection?.remoteAddress || '';
+};
+
+const isIpAllowed = (req) => {
+    const allowList = String(process.env.SUPERADMIN_ALLOWED_IPS || '')
+        .split(',')
+        .map((v) => v.trim())
+        .filter(Boolean);
+
+    if (allowList.length === 0) return true;
+
+    const clientIp = getClientIp(req);
+    return allowList.includes(clientIp);
+};
+
+let ensurePlatformSupportProfileColumnPromise;
+const ensurePlatformSupportProfileColumn = async () => {
+    if (!ensurePlatformSupportProfileColumnPromise) {
+        ensurePlatformSupportProfileColumnPromise = pool.query(`
+            ALTER TABLE platform_settings
+            ADD COLUMN IF NOT EXISTS support_profile JSONB
+            DEFAULT '{"phone":"+91 00000 00000","email":"support@gymvault.com","whatsapp":"+91 00000 00000","about":"GymVault helps gym owners run operations with fast, reliable support.","address":"Head Office, India","timings":"Mon-Sat · 9:00 AM to 7:00 PM IST"}'::jsonb;
+        `);
+    }
+    await ensurePlatformSupportProfileColumnPromise;
+};
+
+const defaultSupportProfile = {
+    phone: '+91 00000 00000',
+    email: 'support@gymvault.com',
+    whatsapp: '+91 00000 00000',
+    about: 'GymVault helps gym owners run operations with fast, reliable support.',
+    address: 'Head Office, India',
+    timings: 'Mon-Sat · 9:00 AM to 7:00 PM IST',
+};
+
+const logAudit = async ({ action, targetType, targetId, targetLabel, details = {}, actorId = 'SUPER_ADMIN' }) => {
+    try {
+        await pool.query(
+            `INSERT INTO audit_logs (actor_type, actor_id, action, target_type, target_id, target_label, details)
+             VALUES ('SUPER_ADMIN', $1, $2, $3, $4, $5, $6::jsonb)`,
+            [
+                String(actorId || 'SUPER_ADMIN'),
+                String(action || ''),
+                String(targetType || ''),
+                targetId ? String(targetId) : null,
+                targetLabel || null,
+                JSON.stringify(details || {}),
+            ]
+        );
+    } catch (err) {
+        console.error('AUDIT LOG INSERT ERROR:', err.message);
+    }
+};
+
+const superAuth = (req, res, next) => {
+    if (!superadminEnabled) {
+        return res.status(503).json({ message: disabledMessage });
+    }
+
+    if (!isIpAllowed(req)) {
+        return res.status(403).json({ message: 'Access denied from this IP address.' });
+    }
+
+    const token = req.header('x-super-token');
+    if (!token) return res.status(401).json({ message: 'Master access denied' });
+
+    try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        if (decoded.role !== 'SUPER_ADMIN') throw new Error('Not a super admin');
+        req.superadmin = decoded;
+        next();
+    } catch (_err) {
+        return res.status(401).json({ message: 'Invalid Master Token' });
+    }
+};
+
+router.post('/login', (req, res) => {
+    if (!superadminEnabled) {
+        return res.status(503).json({ message: disabledMessage });
+    }
+
+    if (!isIpAllowed(req)) {
+        return res.status(403).json({ message: 'Access denied from this IP address.' });
+    }
+
+    const { password } = req.body;
+
+    if (password === masterPassword) {
+        const token = jwt.sign({ role: 'SUPER_ADMIN', scope: 'HQ' }, process.env.JWT_SECRET, { expiresIn: '12h' });
+        return res.json({ token, message: 'Welcome, Boss.' });
+    }
+
+    return res.status(401).json({ message: 'Access Denied.' });
+});
+
+router.get('/overview', superAuth, async (_req, res) => {
+    try {
+        const totals = await pool.query(`
+            SELECT
+                (SELECT COUNT(*) FROM gyms) AS total_gyms,
+                (SELECT COUNT(*) FROM gyms WHERE COALESCE(gym_access_status, 'ACTIVE') = 'ACTIVE' AND COALESCE(is_active, TRUE) = TRUE) AS active_gyms,
+                (SELECT COUNT(*) FROM gyms WHERE COALESCE(gym_access_status, 'ACTIVE') = 'BLOCKED') AS blocked_gyms,
+                (SELECT COUNT(*) FROM users) AS total_users,
+                (SELECT COALESCE(SUM(amount_paid), 0) FROM payments WHERE deleted_at IS NULL) AS total_revenue,
+                (SELECT COUNT(*) FROM support_tickets WHERE UPPER(COALESCE(status,'OPEN')) IN ('OPEN','PENDING')) AS open_support_tickets
+        `);
+
+        const recent = await pool.query(`
+            SELECT action, target_type, target_label, created_at
+            FROM audit_logs
+            ORDER BY created_at DESC
+            LIMIT 20
+        `);
+
+        return res.json({
+            stats: totals.rows[0],
+            recent_activity: recent.rows,
+        });
+    } catch (err) {
+        console.error('SUPERADMIN OVERVIEW ERROR:', err.message);
+        return res.status(500).json({ error: 'Server Error' });
+    }
+});
+
+router.get('/activities', superAuth, async (req, res) => {
+    const limit = Math.min(parseInt(req.query.limit || '50', 10) || 50, 200);
+    try {
+        const rows = await pool.query(
+            `SELECT id, action, target_type, target_id, target_label, details, created_at
+             FROM audit_logs
+             ORDER BY created_at DESC
+             LIMIT $1`,
+            [limit]
+        );
+        return res.json(rows.rows);
+    } catch (err) {
+        console.error('SUPERADMIN ACTIVITIES ERROR:', err.message);
+        return res.status(500).json({ error: 'Server Error' });
+    }
+});
+
+router.get('/gyms', superAuth, async (req, res) => {
+    const q = String(req.query.q || '').trim();
+    const status = String(req.query.status || '').trim().toUpperCase();
+    const plan = String(req.query.plan || '').trim();
+    const dateFrom = String(req.query.dateFrom || '').trim();
+    const dateTo = String(req.query.dateTo || '').trim();
+
+    const params = [];
+    const where = [];
+
+    if (q) {
+        params.push(`%${q}%`);
+        where.push(`(g.name ILIKE $${params.length} OR COALESCE(u.full_name,'') ILIKE $${params.length} OR COALESCE(u.email,'') ILIKE $${params.length})`);
+    }
+
+    if (status && ['ACTIVE', 'BLOCKED', 'SUSPENDED'].includes(status)) {
+        params.push(status);
+        where.push(`COALESCE(g.gym_access_status, 'ACTIVE') = $${params.length}`);
+    }
+
+    if (plan) {
+        params.push(plan);
+        where.push(`COALESCE(g.current_plan, 'pro') = $${params.length}`);
+    }
+
+    if (dateFrom) {
+        params.push(dateFrom);
+        where.push(`g.created_at::date >= $${params.length}::date`);
+    }
+
+    if (dateTo) {
+        params.push(dateTo);
+        where.push(`g.created_at::date <= $${params.length}::date`);
+    }
+
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+    try {
+        const result = await pool.query(
+            `SELECT
+                g.id,
+                g.name AS gym_name,
+                COALESCE(g.current_plan, 'pro') AS plan,
+                COALESCE(g.gym_access_status, 'ACTIVE') AS status,
+                COALESCE(g.last_active_at, u.last_login_at, g.created_at) AS last_active,
+                g.created_at,
+                g.is_active,
+                u.id AS owner_id,
+                u.full_name AS owner_name,
+                u.email AS owner_email,
+                (SELECT COUNT(*) FROM members m WHERE m.gym_id = g.id AND m.deleted_at IS NULL) AS total_members,
+                (SELECT COALESCE(SUM(p.amount_paid),0) FROM payments p WHERE p.gym_id = g.id AND p.deleted_at IS NULL) AS total_revenue
+            FROM gyms g
+            LEFT JOIN users u ON g.id = u.gym_id AND UPPER(u.role) = 'OWNER'
+            ${whereSql}
+            ORDER BY g.created_at DESC`,
+            params
+        );
+
+        return res.json(result.rows);
+    } catch (err) {
+        console.error('SUPERADMIN GYMS ERROR:', err.message);
+        return res.status(500).json({ error: 'Server Error' });
+    }
+});
+
+router.get('/gyms/:id', superAuth, async (req, res) => {
+    const gymId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(gymId)) return res.status(400).json({ error: 'Invalid gym id' });
+
+    try {
+        const gym = await pool.query(
+            `SELECT
+                g.id,
+                g.name AS gym_name,
+                g.phone,
+                g.address,
+                g.website,
+                g.support_email,
+                COALESCE(g.current_plan, 'pro') AS plan,
+                COALESCE(g.gym_access_status, 'ACTIVE') AS status,
+                g.created_at,
+                COALESCE(g.last_active_at, u.last_login_at, g.created_at) AS last_active,
+                u.id AS owner_id,
+                u.full_name AS owner_name,
+                u.email AS owner_email,
+                u.phone AS owner_phone,
+                (SELECT COUNT(*) FROM members m WHERE m.gym_id = g.id AND m.deleted_at IS NULL) AS total_members,
+                (SELECT COALESCE(SUM(p.amount_paid),0) FROM payments p WHERE p.gym_id = g.id AND p.deleted_at IS NULL) AS total_revenue,
+                (SELECT COUNT(*) FROM users su WHERE su.gym_id = g.id) AS total_users
+             FROM gyms g
+             LEFT JOIN users u ON g.id = u.gym_id AND UPPER(u.role)='OWNER'
+             WHERE g.id = $1`,
+            [gymId]
+        );
+
+        if (gym.rows.length === 0) {
+            return res.status(404).json({ error: 'Gym not found' });
+        }
+
+        return res.json(gym.rows[0]);
+    } catch (err) {
+        console.error('SUPERADMIN GYM DETAIL ERROR:', err.message);
+        return res.status(500).json({ error: 'Server Error' });
+    }
+});
+
+router.put('/gyms/:id', superAuth, async (req, res) => {
+    const gymId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(gymId)) return res.status(400).json({ error: 'Invalid gym id' });
+
+    const { gym_name, phone, address, support_email, website, plan } = req.body;
+
+    try {
+        const updated = await pool.query(
+            `UPDATE gyms
+             SET name = COALESCE($1, name),
+                 phone = COALESCE($2, phone),
+                 address = COALESCE($3, address),
+                 support_email = COALESCE($4, support_email),
+                 website = COALESCE($5, website),
+                 current_plan = COALESCE($6, current_plan)
+             WHERE id = $7
+             RETURNING id, name AS gym_name, phone, address, support_email, website, current_plan`,
+            [gym_name || null, phone || null, address || null, support_email || null, website || null, plan || null, gymId]
+        );
+
+        if (updated.rows.length === 0) return res.status(404).json({ error: 'Gym not found' });
+
+        await logAudit({
+            action: 'GYM_EDITED',
+            targetType: 'GYM',
+            targetId: gymId,
+            targetLabel: updated.rows[0].gym_name,
+            details: { phone, address, support_email, website, plan },
+        });
+
+        return res.json(updated.rows[0]);
+    } catch (err) {
+        console.error('SUPERADMIN GYM EDIT ERROR:', err.message);
+        return res.status(500).json({ error: 'Server Error' });
+    }
+});
+
+router.put('/gyms/:id/status', superAuth, async (req, res) => {
+    const gymId = parseInt(req.params.id, 10);
+    const status = String(req.body.status || '').trim().toUpperCase();
+    const reason = String(req.body.reason || '').trim();
+
+    if (!Number.isInteger(gymId)) return res.status(400).json({ error: 'Invalid gym id' });
+    if (!['ACTIVE', 'BLOCKED', 'SUSPENDED'].includes(status)) {
+        return res.status(400).json({ error: 'Invalid status' });
+    }
+
+    try {
+        const updated = await pool.query(
+            `UPDATE gyms
+             SET gym_access_status = $1,
+                 is_active = CASE WHEN $1 = 'ACTIVE' THEN TRUE ELSE FALSE END,
+                 blocked_at = CASE WHEN $1 = 'BLOCKED' THEN NOW() ELSE blocked_at END,
+                 suspended_at = CASE WHEN $1 = 'SUSPENDED' THEN NOW() ELSE suspended_at END,
+                 blocked_reason = CASE WHEN $1 = 'BLOCKED' THEN NULLIF($2, '') ELSE blocked_reason END,
+                 suspended_reason = CASE WHEN $1 = 'SUSPENDED' THEN NULLIF($2, '') ELSE suspended_reason END
+             WHERE id = $3
+             RETURNING id, name AS gym_name, gym_access_status AS status`,
+            [status, reason, gymId]
+        );
+
+        if (updated.rows.length === 0) return res.status(404).json({ error: 'Gym not found' });
+
+        await logAudit({
+            action: `GYM_${status}`,
+            targetType: 'GYM',
+            targetId: gymId,
+            targetLabel: updated.rows[0].gym_name,
+            details: { reason },
+        });
+
+        return res.json({ message: 'Gym status updated', ...updated.rows[0] });
+    } catch (err) {
+        console.error('SUPERADMIN GYM STATUS ERROR:', err.message);
+        return res.status(500).json({ error: 'Server Error' });
+    }
+});
+
+router.delete('/gyms/:id', superAuth, async (req, res) => {
+    const gymId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(gymId)) return res.status(400).json({ error: 'Invalid gym id' });
+
+    try {
+        await pool.query('BEGIN');
+
+        const gym = await pool.query('SELECT id, name FROM gyms WHERE id = $1', [gymId]);
+        if (gym.rows.length === 0) {
+            await pool.query('ROLLBACK');
+            return res.status(404).json({ error: 'Gym not found' });
+        }
+
+        await pool.query('DELETE FROM users WHERE gym_id = $1', [gymId]);
+        await pool.query('DELETE FROM gyms WHERE id = $1', [gymId]);
+
+        await pool.query('COMMIT');
+
+        await logAudit({
+            action: 'GYM_DELETED',
+            targetType: 'GYM',
+            targetId: gymId,
+            targetLabel: gym.rows[0].name,
+        });
+
+        return res.json({ message: 'Gym and all associated data completely destroyed.' });
+    } catch (err) {
+        await pool.query('ROLLBACK');
+        console.error('HQ DELETE ERROR:', err.message);
+        return res.status(500).json({ error: 'Server Error' });
+    }
+});
+
+router.post('/gyms/:id/impersonate', superAuth, async (req, res) => {
+    const gymId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(gymId)) return res.status(400).json({ error: 'Invalid gym id' });
+
+    try {
+        const owner = await pool.query(
+            `SELECT id, gym_id, full_name, email, role, staff_role, is_active
+             FROM users
+             WHERE gym_id = $1 AND UPPER(role) = 'OWNER'
+             ORDER BY id ASC
+             LIMIT 1`,
+            [gymId]
+        );
+
+        if (owner.rows.length === 0) {
+            return res.status(404).json({ error: 'Owner not found for this gym' });
+        }
+
+        const user = owner.rows[0];
+        const token = jwt.sign(
+            {
+                user: {
+                    id: user.id,
+                    gym_id: user.gym_id,
+                    role: user.role,
+                    staff_role: user.staff_role,
+                    permissions: ['*'],
+                    is_active: user.is_active,
+                },
+                impersonated_by: 'SUPER_ADMIN',
+            },
+            process.env.JWT_SECRET,
+            { expiresIn: '2h' }
+        );
+
+        await logAudit({
+            action: 'GYM_IMPERSONATED',
+            targetType: 'GYM',
+            targetId: gymId,
+            targetLabel: user.full_name,
+            details: { owner_id: user.id, owner_email: user.email },
+        });
+
+        return res.json({
+            token,
+            user: {
+                id: user.id,
+                full_name: user.full_name,
+                email: user.email,
+                gym_id: user.gym_id,
+                role: user.role,
+                staff_role: user.staff_role,
+                is_active: user.is_active,
+                permissions: ['*'],
+            }
+        });
+    } catch (err) {
+        console.error('SUPERADMIN IMPERSONATE ERROR:', err.message);
+        return res.status(500).json({ error: 'Server Error' });
+    }
+});
+
+router.get('/users', superAuth, async (req, res) => {
+    const q = String(req.query.q || '').trim();
+    const status = String(req.query.status || '').trim().toUpperCase();
+
+    const params = [];
+    const where = [];
+
+    if (q) {
+        params.push(`%${q}%`);
+        where.push(`(u.full_name ILIKE $${params.length} OR u.email ILIKE $${params.length} OR g.name ILIKE $${params.length})`);
+    }
+
+    if (status === 'ACTIVE' || status === 'BLOCKED') {
+        params.push(status === 'ACTIVE');
+        where.push(`COALESCE(u.is_active, TRUE) = $${params.length}`);
+    }
+
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+    try {
+        const users = await pool.query(
+            `SELECT
+                u.id,
+                u.full_name,
+                u.email,
+                u.role,
+                u.staff_role,
+                u.is_active,
+                u.last_login_at,
+                g.id AS gym_id,
+                g.name AS gym_name
+             FROM users u
+             LEFT JOIN gyms g ON g.id = u.gym_id
+             ${whereSql}
+             ORDER BY u.created_at DESC`,
+            params
+        );
+
+        return res.json(users.rows);
+    } catch (err) {
+        console.error('SUPERADMIN USERS LIST ERROR:', err.message);
+        return res.status(500).json({ error: 'Server Error' });
+    }
+});
+
+router.post('/users/:id/reset-password', superAuth, async (req, res) => {
+    const userId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(userId)) return res.status(400).json({ error: 'Invalid user id' });
+
+    const newPassword = String(req.body.new_password || '').trim() || crypto.randomBytes(6).toString('base64url');
+    if (newPassword.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters.' });
+
+    try {
+        const user = await pool.query('SELECT id, full_name, email FROM users WHERE id = $1', [userId]);
+        if (user.rows.length === 0) return res.status(404).json({ error: 'User not found' });
+
+        const salt = await bcrypt.genSalt(10);
+        const hash = await bcrypt.hash(newPassword, salt);
+
+        await pool.query('UPDATE users SET password_hash = $1 WHERE id = $2', [hash, userId]);
+
+        await logAudit({
+            action: 'USER_PASSWORD_RESET',
+            targetType: 'USER',
+            targetId: userId,
+            targetLabel: user.rows[0].email,
+        });
+
+        return res.json({ message: 'Password reset successfully', new_password: newPassword });
+    } catch (err) {
+        console.error('SUPERADMIN USER RESET PASSWORD ERROR:', err.message);
+        return res.status(500).json({ error: 'Server Error' });
+    }
+});
+
+router.put('/users/:id/block', superAuth, async (req, res) => {
+    const userId = parseInt(req.params.id, 10);
+    const blocked = toBool(req.body.blocked);
+    if (!Number.isInteger(userId)) return res.status(400).json({ error: 'Invalid user id' });
+
+    try {
+        const updated = await pool.query(
+            `UPDATE users
+             SET is_active = $1
+             WHERE id = $2
+             RETURNING id, full_name, email, is_active`,
+            [!blocked, userId]
+        );
+
+        if (updated.rows.length === 0) return res.status(404).json({ error: 'User not found' });
+
+        await logAudit({
+            action: blocked ? 'USER_BLOCKED' : 'USER_UNBLOCKED',
+            targetType: 'USER',
+            targetId: userId,
+            targetLabel: updated.rows[0].email,
+        });
+
+        return res.json({ message: 'User status updated', user: updated.rows[0] });
+    } catch (err) {
+        console.error('SUPERADMIN USER BLOCK ERROR:', err.message);
+        return res.status(500).json({ error: 'Server Error' });
+    }
+});
+
+router.delete('/users/:id', superAuth, async (req, res) => {
+    const userId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(userId)) return res.status(400).json({ error: 'Invalid user id' });
+
+    try {
+        const user = await pool.query('SELECT id, email FROM users WHERE id = $1', [userId]);
+        if (user.rows.length === 0) return res.status(404).json({ error: 'User not found' });
+
+        await pool.query('DELETE FROM users WHERE id = $1', [userId]);
+
+        await logAudit({
+            action: 'USER_DELETED',
+            targetType: 'USER',
+            targetId: userId,
+            targetLabel: user.rows[0].email,
+        });
+
+        return res.json({ message: 'User deleted successfully' });
+    } catch (err) {
+        console.error('SUPERADMIN USER DELETE ERROR:', err.message);
+        return res.status(500).json({ error: 'Server Error' });
+    }
+});
+
+router.get('/support/tickets', superAuth, async (req, res) => {
+    const q = String(req.query.q || '').trim();
+    const status = String(req.query.status || '').trim().toUpperCase();
+    const priority = String(req.query.priority || '').trim().toUpperCase();
+
+    const params = [];
+    const where = [];
+
+    if (q) {
+        params.push(`%${q}%`);
+        where.push(`(t.subject ILIKE $${params.length} OR t.description ILIKE $${params.length} OR g.name ILIKE $${params.length} OR u.email ILIKE $${params.length})`);
+    }
+
+    if (status) {
+        params.push(status);
+        where.push(`UPPER(COALESCE(t.status,'OPEN')) = $${params.length}`);
+    }
+
+    if (priority) {
+        params.push(priority);
+        where.push(`UPPER(COALESCE(t.priority,'MEDIUM')) = $${params.length}`);
+    }
+
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+    try {
+        const rows = await pool.query(
+            `SELECT
+                t.id,
+                t.gym_id,
+                g.name AS gym_name,
+                t.raised_by,
+                u.full_name AS user_name,
+                u.email AS user_email,
+                t.subject,
+                t.status,
+                t.priority,
+                t.category,
+                t.tags,
+                t.created_at,
+                t.updated_at
+             FROM support_tickets t
+             LEFT JOIN gyms g ON g.id = t.gym_id
+             LEFT JOIN users u ON u.id = t.raised_by
+             ${whereSql}
+             ORDER BY t.created_at DESC`,
+            params
+        );
+
+        return res.json(rows.rows);
+    } catch (err) {
+        console.error('SUPERADMIN SUPPORT LIST ERROR:', err.message);
+        return res.status(500).json({ error: 'Server Error' });
+    }
+});
+
+router.get('/support/tickets/:id', superAuth, async (req, res) => {
+    const ticketId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(ticketId)) return res.status(400).json({ error: 'Invalid ticket id' });
+
+    try {
+        const ticket = await pool.query(
+            `SELECT
+                t.*,
+                g.name AS gym_name,
+                u.full_name AS user_name,
+                u.email AS user_email
+             FROM support_tickets t
+             LEFT JOIN gyms g ON g.id = t.gym_id
+             LEFT JOIN users u ON u.id = t.raised_by
+             WHERE t.id = $1`,
+            [ticketId]
+        );
+
+        if (ticket.rows.length === 0) return res.status(404).json({ error: 'Ticket not found' });
+
+        const messages = await pool.query(
+            `SELECT
+                m.id,
+                m.ticket_id,
+                m.author_type,
+                m.message,
+                m.created_at,
+                u.full_name AS author_name,
+                u.email AS author_email
+             FROM support_ticket_messages m
+             LEFT JOIN users u ON u.id = m.author_user_id
+             WHERE m.ticket_id = $1
+             ORDER BY m.created_at ASC`,
+            [ticketId]
+        );
+
+        return res.json({ ticket: ticket.rows[0], messages: messages.rows });
+    } catch (err) {
+        console.error('SUPERADMIN SUPPORT DETAIL ERROR:', err.message);
+        return res.status(500).json({ error: 'Server Error' });
+    }
+});
+
+router.post('/support/tickets/:id/reply', superAuth, async (req, res) => {
+    const ticketId = parseInt(req.params.id, 10);
+    const { message } = req.body;
+
+    if (!Number.isInteger(ticketId)) return res.status(400).json({ error: 'Invalid ticket id' });
+    if (!message || !String(message).trim()) return res.status(400).json({ error: 'Message is required' });
+
+    try {
+        const ticket = await pool.query('SELECT id, gym_id, subject FROM support_tickets WHERE id = $1', [ticketId]);
+        if (ticket.rows.length === 0) return res.status(404).json({ error: 'Ticket not found' });
+
+        const insert = await pool.query(
+            `INSERT INTO support_ticket_messages (ticket_id, gym_id, author_type, message)
+             VALUES ($1, $2, 'HQ', $3)
+             RETURNING id, ticket_id, author_type, message, created_at`,
+            [ticketId, ticket.rows[0].gym_id, String(message).trim()]
+        );
+
+        await pool.query(
+            `UPDATE support_tickets
+             SET updated_at = NOW(),
+                 status = CASE WHEN UPPER(status) = 'OPEN' THEN 'PENDING' ELSE status END
+             WHERE id = $1`,
+            [ticketId]
+        );
+
+        await logAudit({
+            action: 'TICKET_REPLIED',
+            targetType: 'TICKET',
+            targetId: ticketId,
+            targetLabel: ticket.rows[0].subject,
+        });
+
+        return res.status(201).json(insert.rows[0]);
+    } catch (err) {
+        console.error('SUPERADMIN SUPPORT REPLY ERROR:', err.message);
+        return res.status(500).json({ error: 'Server Error' });
+    }
+});
+
+router.put('/support/tickets/:id', superAuth, async (req, res) => {
+    const ticketId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(ticketId)) return res.status(400).json({ error: 'Invalid ticket id' });
+
+    const status = req.body.status ? String(req.body.status).trim().toUpperCase() : null;
+    const priority = req.body.priority ? String(req.body.priority).trim().toUpperCase() : null;
+    const tags = Array.isArray(req.body.tags) ? req.body.tags.map((v) => String(v || '').trim()).filter(Boolean) : null;
+
+    try {
+        const updated = await pool.query(
+            `UPDATE support_tickets
+             SET status = COALESCE($1, status),
+                 priority = COALESCE($2, priority),
+                 tags = COALESCE($3::text[], tags),
+                 updated_at = NOW()
+             WHERE id = $4
+             RETURNING id, subject, status, priority, tags`,
+            [status, priority, tags, ticketId]
+        );
+
+        if (updated.rows.length === 0) return res.status(404).json({ error: 'Ticket not found' });
+
+        await logAudit({
+            action: 'TICKET_UPDATED',
+            targetType: 'TICKET',
+            targetId: ticketId,
+            targetLabel: updated.rows[0].subject,
+            details: { status, priority, tags },
+        });
+
+        return res.json(updated.rows[0]);
+    } catch (err) {
+        console.error('SUPERADMIN SUPPORT UPDATE ERROR:', err.message);
+        return res.status(500).json({ error: 'Server Error' });
+    }
+});
+
+router.get('/reports/light', superAuth, async (_req, res) => {
+    try {
+        const totals = await pool.query(`
+            SELECT
+                (SELECT COALESCE(SUM(amount_paid),0) FROM payments WHERE deleted_at IS NULL) AS total_revenue,
+                (SELECT COUNT(*) FROM gyms) AS total_gyms,
+                (SELECT COUNT(*) FROM gyms WHERE DATE_TRUNC('month', created_at) = DATE_TRUNC('month', NOW())) AS gyms_this_month,
+                (SELECT COUNT(*) FROM gyms WHERE COALESCE(gym_access_status,'ACTIVE') IN ('BLOCKED','SUSPENDED')) AS churn_gyms
+        `);
+
+        const growth = await pool.query(`
+            SELECT TO_CHAR(DATE_TRUNC('month', created_at), 'YYYY-MM') AS month, COUNT(*)::int AS gyms
+            FROM gyms
+            GROUP BY DATE_TRUNC('month', created_at)
+            ORDER BY month DESC
+            LIMIT 6
+        `);
+
+        return res.json({ summary: totals.rows[0], growth: growth.rows.reverse() });
+    } catch (err) {
+        console.error('SUPERADMIN REPORTS ERROR:', err.message);
+        return res.status(500).json({ error: 'Server Error' });
+    }
+});
+
+router.get('/system', superAuth, async (_req, res) => {
+    try {
+        await ensurePlatformSupportProfileColumn();
+        const row = await pool.query('SELECT * FROM platform_settings WHERE id = 1');
+        const base = row.rows[0] || { maintenance_mode: false, maintenance_message: '', feature_flags: {} };
+        return res.json({
+            ...base,
+            support_profile: {
+                ...defaultSupportProfile,
+                ...(base.support_profile || {}),
+            },
+        });
+    } catch (err) {
+        console.error('SUPERADMIN SYSTEM GET ERROR:', err.message);
+        return res.status(500).json({ error: 'Server Error' });
+    }
+});
+
+router.put('/system', superAuth, async (req, res) => {
+    const maintenanceMode = typeof req.body.maintenance_mode === 'boolean' ? req.body.maintenance_mode : null;
+    const maintenanceMessage = req.body.maintenance_message == null ? null : String(req.body.maintenance_message);
+    const featureFlags = req.body.feature_flags && typeof req.body.feature_flags === 'object' ? req.body.feature_flags : null;
+    const supportProfile = req.body.support_profile && typeof req.body.support_profile === 'object' ? req.body.support_profile : null;
+
+    try {
+        await ensurePlatformSupportProfileColumn();
+
+        const updated = await pool.query(
+            `UPDATE platform_settings
+             SET maintenance_mode = COALESCE($1, maintenance_mode),
+                 maintenance_message = COALESCE($2, maintenance_message),
+                 feature_flags = COALESCE($3::jsonb, feature_flags),
+                 support_profile = COALESCE($4::jsonb, support_profile),
+                 updated_at = NOW()
+             WHERE id = 1
+             RETURNING *`,
+            [
+                maintenanceMode,
+                maintenanceMessage,
+                featureFlags ? JSON.stringify(featureFlags) : null,
+                supportProfile ? JSON.stringify(supportProfile) : null,
+            ]
+        );
+
+        await logAudit({
+            action: 'SYSTEM_SETTINGS_UPDATED',
+            targetType: 'SYSTEM',
+            targetId: '1',
+            targetLabel: 'platform_settings',
+            details: { maintenanceMode, maintenanceMessage, featureFlags, supportProfile },
+        });
+
+        return res.json(updated.rows[0]);
+    } catch (err) {
+        console.error('SUPERADMIN SYSTEM UPDATE ERROR:', err.message);
+        return res.status(500).json({ error: 'Server Error' });
+    }
+});
+
+router.post('/system/broadcast', superAuth, async (req, res) => {
+    const title = String(req.body.title || '').trim();
+    const message = String(req.body.message || '').trim();
+
+    if (!title || !message) {
+        return res.status(400).json({ error: 'title and message are required' });
+    }
+
+    try {
+        await pool.query(
+            `INSERT INTO notifications (gym_id, title, message)
+             SELECT id, $1, $2 FROM gyms`,
+            [title, message]
+        );
+
+        await logAudit({
+            action: 'SYSTEM_BROADCAST_SENT',
+            targetType: 'SYSTEM',
+            targetId: 'broadcast',
+            targetLabel: title,
+            details: { message },
+        });
+
+        return res.json({ message: 'Broadcast sent to all gyms.' });
+    } catch (err) {
+        console.error('SUPERADMIN BROADCAST ERROR:', err.message);
+        return res.status(500).json({ error: 'Server Error' });
+    }
+});
+
+router.get('/logs', superAuth, async (req, res) => {
+    const q = String(req.query.q || '').trim();
+    const params = [];
+    let where = '';
+
+    if (q) {
+        params.push(`%${q}%`);
+        where = `WHERE action ILIKE $1 OR COALESCE(target_label,'') ILIKE $1 OR COALESCE(target_type,'') ILIKE $1`;
+    }
+
+    try {
+        const rows = await pool.query(
+            `SELECT id, action, target_type, target_id, target_label, actor_type, actor_id, details, created_at
+             FROM audit_logs
+             ${where}
+             ORDER BY created_at DESC
+             LIMIT 500`,
+            params
+        );
+        return res.json(rows.rows);
+    } catch (err) {
+        console.error('SUPERADMIN LOGS ERROR:', err.message);
+        return res.status(500).json({ error: 'Server Error' });
+    }
+});
+
+router.get('/search', superAuth, async (req, res) => {
+    const q = String(req.query.q || '').trim();
+    if (!q) return res.json({ gyms: [], users: [] });
+
+    try {
+        const gyms = await pool.query(
+            `SELECT id, name AS gym_name, COALESCE(current_plan,'pro') AS plan, COALESCE(gym_access_status, 'ACTIVE') AS status
+             FROM gyms
+             WHERE name ILIKE $1
+             ORDER BY created_at DESC
+             LIMIT 15`,
+            [`%${q}%`]
+        );
+
+        const users = await pool.query(
+            `SELECT u.id, u.full_name, u.email, u.role, g.name AS gym_name
+             FROM users u
+             LEFT JOIN gyms g ON g.id = u.gym_id
+             WHERE u.full_name ILIKE $1 OR u.email ILIKE $1
+             ORDER BY u.created_at DESC
+             LIMIT 20`,
+            [`%${q}%`]
+        );
+
+        return res.json({ gyms: gyms.rows, users: users.rows });
+    } catch (err) {
+        console.error('SUPERADMIN SEARCH ERROR:', err.message);
+        return res.status(500).json({ error: 'Server Error' });
+    }
+});
+
+module.exports = router;

@@ -1,19 +1,196 @@
 const express = require('express');
 const router = express.Router();
+const bcrypt = require('bcryptjs');
 const { pool } = require('../config/db');
+const auth = require('../middleware/authMiddleware'); // Added Auth Check
+const { requireOwner, getDefaultPermissionsByStaffRole } = require('../middleware/rbac');
 
-// GET ALL USERS (For Dropdowns)
-// In routes/users.js
-router.get('/', async (req, res) => {
+const normalizeStaffRole = (role) => {
+    const value = String(role || 'STAFF').trim().toUpperCase();
+    const allowed = new Set(['MANAGER', 'RECEPTION', 'TRAINER', 'WORKER', 'CLEANER', 'ACCOUNTANT', 'STAFF']);
+    return allowed.has(value) ? value : 'STAFF';
+};
+
+const normalizePermissions = (permissions, staffRole) => {
+    if (Array.isArray(permissions) && permissions.length > 0) {
+        return Array.from(new Set(permissions.map((value) => String(value || '').trim()).filter(Boolean)));
+    }
+    return getDefaultPermissionsByStaffRole(staffRole);
+};
+
+// GET /api/users — Returns gym users for admin dropdowns
+router.get('/', auth, async (req, res) => {
     try {
-        // 👇 The Fix: "name AS full_name"
         const result = await pool.query(
-            "SELECT id, name AS full_name, email FROM users WHERE gym_id = 1 ORDER BY name ASC"
+            `SELECT id, full_name, email, role, staff_role, is_active
+             FROM users
+             WHERE gym_id = $1
+             ORDER BY full_name ASC`,
+             [req.user.gym_id] // Securely locks queries to the logged-in owner's unique gym ID
         );
         res.json(result.rows);
     } catch (err) {
-        console.error(err.message);
-        res.status(500).send("Server Error");
+        console.error("USERS ERROR:", err.message);
+        res.status(500).json({ error: "Server Error" });
+    }
+});
+
+// GET /api/users/staff — Owner-only staff list
+router.get('/staff', auth, requireOwner, async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT id, full_name, email, role, staff_role, is_active, permissions, created_at, last_login_at
+             FROM users
+             WHERE gym_id = $1
+             ORDER BY CASE WHEN role = 'OWNER' THEN 0 ELSE 1 END, full_name ASC`,
+            [req.user.gym_id]
+        );
+
+        return res.json(result.rows);
+    } catch (err) {
+        console.error('STAFF LIST ERROR:', err.message);
+        return res.status(500).json({ error: 'Server Error' });
+    }
+});
+
+// POST /api/users/staff — Owner adds staff with email + password
+router.post('/staff', auth, requireOwner, async (req, res) => {
+    const { full_name, email, password, staff_role, permissions } = req.body;
+
+    if (!full_name || !email || !password) {
+        return res.status(400).json({ error: 'full_name, email and password are required.' });
+    }
+
+    if (String(password).length < 8) {
+        return res.status(400).json({ error: 'Password must be at least 8 characters.' });
+    }
+
+    try {
+        const normalizedRole = normalizeStaffRole(staff_role);
+        const effectivePermissions = normalizePermissions(permissions, normalizedRole);
+
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(password, salt);
+
+        const insert = await pool.query(
+            `INSERT INTO users (gym_id, full_name, email, password_hash, role, staff_role, is_active, permissions, created_by)
+             VALUES ($1, $2, $3, $4, 'STAFF', $5, TRUE, $6::jsonb, $7)
+             RETURNING id, full_name, email, role, staff_role, is_active, permissions, created_at`,
+            [
+                req.user.gym_id,
+                full_name,
+                String(email).trim().toLowerCase(),
+                hashedPassword,
+                normalizedRole,
+                JSON.stringify(effectivePermissions),
+                req.user.id,
+            ]
+        );
+
+        return res.status(201).json(insert.rows[0]);
+    } catch (err) {
+        console.error('STAFF CREATE ERROR:', err.message);
+        if (err.code === '23505') {
+            return res.status(400).json({ error: 'This email is already registered.' });
+        }
+        return res.status(500).json({ error: 'Server Error' });
+    }
+});
+
+// PUT /api/users/staff/:id — Owner updates staff role, permissions, profile, status
+router.put('/staff/:id', auth, requireOwner, async (req, res) => {
+    const staffId = parseInt(req.params.id, 10);
+    const { full_name, staff_role, is_active, permissions } = req.body;
+
+    if (!Number.isInteger(staffId)) {
+        return res.status(400).json({ error: 'Invalid staff id.' });
+    }
+
+    try {
+        const existing = await pool.query(
+            `SELECT id, role
+             FROM users
+             WHERE id = $1 AND gym_id = $2`,
+            [staffId, req.user.gym_id]
+        );
+
+        if (existing.rows.length === 0) {
+            return res.status(404).json({ error: 'Staff user not found.' });
+        }
+
+        if (existing.rows[0].role === 'OWNER') {
+            return res.status(400).json({ error: 'Owner account cannot be edited here.' });
+        }
+
+        const normalizedRole = normalizeStaffRole(staff_role);
+        const effectivePermissions = normalizePermissions(permissions, normalizedRole);
+
+        const updated = await pool.query(
+            `UPDATE users
+             SET full_name = COALESCE($1, full_name),
+                 staff_role = $2,
+                 is_active = COALESCE($3, is_active),
+                 permissions = $4::jsonb
+             WHERE id = $5 AND gym_id = $6
+             RETURNING id, full_name, email, role, staff_role, is_active, permissions, created_at, last_login_at`,
+            [
+                full_name || null,
+                normalizedRole,
+                typeof is_active === 'boolean' ? is_active : null,
+                JSON.stringify(effectivePermissions),
+                staffId,
+                req.user.gym_id,
+            ]
+        );
+
+        return res.json(updated.rows[0]);
+    } catch (err) {
+        console.error('STAFF UPDATE ERROR:', err.message);
+        return res.status(500).json({ error: 'Server Error' });
+    }
+});
+
+// POST /api/users/staff/:id/reset-password — Owner resets staff password
+router.post('/staff/:id/reset-password', auth, requireOwner, async (req, res) => {
+    const staffId = parseInt(req.params.id, 10);
+    const { new_password } = req.body;
+
+    if (!Number.isInteger(staffId)) {
+        return res.status(400).json({ error: 'Invalid staff id.' });
+    }
+
+    if (!new_password || String(new_password).length < 8) {
+        return res.status(400).json({ error: 'new_password must be at least 8 characters.' });
+    }
+
+    try {
+        const existing = await pool.query(
+            `SELECT id, role
+             FROM users
+             WHERE id = $1 AND gym_id = $2`,
+            [staffId, req.user.gym_id]
+        );
+
+        if (existing.rows.length === 0) {
+            return res.status(404).json({ error: 'Staff user not found.' });
+        }
+
+        if (existing.rows[0].role === 'OWNER') {
+            return res.status(400).json({ error: 'Owner password cannot be reset from this action.' });
+        }
+
+        const salt = await bcrypt.genSalt(10);
+        const hashed = await bcrypt.hash(new_password, salt);
+
+        await pool.query(
+            'UPDATE users SET password_hash = $1 WHERE id = $2 AND gym_id = $3',
+            [hashed, staffId, req.user.gym_id]
+        );
+
+        return res.json({ message: 'Staff password reset successfully.' });
+    } catch (err) {
+        console.error('STAFF PASSWORD RESET ERROR:', err.message);
+        return res.status(500).json({ error: 'Server Error' });
     }
 });
 

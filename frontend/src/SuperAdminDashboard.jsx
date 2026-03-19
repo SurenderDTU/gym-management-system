@@ -1,0 +1,1042 @@
+import React, { useEffect, useMemo, useState } from 'react';
+import axios from 'axios';
+import {
+  Building2,
+  Users,
+  ChevronDown,
+  ChevronRight,
+  ShieldAlert,
+  LogOut,
+  Activity,
+  Search,
+  Ban,
+  PauseCircle,
+  Trash2,
+  Eye,
+  Edit3,
+  UserCog,
+  Ticket,
+  BarChart3,
+  Settings,
+  ClipboardList,
+  AlertTriangle,
+  Send,
+  KeyRound,
+  RefreshCw,
+} from 'lucide-react';
+
+const TABS = [
+  { id: 'overview', label: 'Overview', icon: Activity },
+  { id: 'users', label: 'Users', icon: Users },
+  { id: 'support', label: 'Support', icon: Ticket },
+  { id: 'reports', label: 'Reports', icon: BarChart3 },
+  { id: 'system', label: 'System', icon: Settings },
+  { id: 'logs', label: 'Logs', icon: ClipboardList },
+  { id: 'danger', label: 'Danger Zone', icon: AlertTriangle },
+];
+
+const statusClass = (status) => {
+  const value = String(status || '').toUpperCase();
+  if (value === 'ACTIVE') return 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30';
+  if (value === 'BLOCKED') return 'bg-rose-500/20 text-rose-400 border border-rose-500/30';
+  return 'bg-amber-500/20 text-amber-400 border border-amber-500/30';
+};
+
+function SuperAdminDashboard({ token, onLogout }) {
+  const headers = useMemo(() => ({ headers: { 'x-super-token': token } }), [token]);
+
+  const [activeTab, setActiveTab] = useState('overview');
+  const [loading, setLoading] = useState(true);
+
+  const [search, setSearch] = useState('');
+  const [globalSearch, setGlobalSearch] = useState({ gyms: [], users: [] });
+
+  const [overview, setOverview] = useState({ stats: {}, recent_activity: [] });
+  const [gyms, setGyms] = useState([]);
+  const [selectedGym, setSelectedGym] = useState(null);
+  const [users, setUsers] = useState([]);
+  const [expandedGyms, setExpandedGyms] = useState({});
+  const [tickets, setTickets] = useState([]);
+  const [selectedTicket, setSelectedTicket] = useState(null);
+  const [reports, setReports] = useState({ summary: {}, growth: [] });
+  const [system, setSystem] = useState({
+    maintenance_mode: false,
+    maintenance_message: '',
+    feature_flags: {},
+    support_profile: {
+      phone: '',
+      email: '',
+      whatsapp: '',
+      about: '',
+      address: '',
+      timings: '',
+    },
+  });
+  const [logs, setLogs] = useState([]);
+
+  const [gymFilters, setGymFilters] = useState({ q: '', status: '', plan: '', dateFrom: '', dateTo: '' });
+  const [userFilters, setUserFilters] = useState({ q: '', status: '' });
+  const [ticketFilters, setTicketFilters] = useState({ q: '', status: '', priority: '' });
+
+  const [ticketReply, setTicketReply] = useState('');
+  const [broadcast, setBroadcast] = useState({ title: '', message: '' });
+
+  const [dangerGym, setDangerGym] = useState({ gymId: '', confirmName: '' });
+  const [dangerUser, setDangerUser] = useState({ userId: '', confirmText: '' });
+  const [showGymViewModal, setShowGymViewModal] = useState(false);
+  const [gymEditModal, setGymEditModal] = useState({
+    open: false,
+    gymId: null,
+    gym_name: '',
+    phone: '',
+    support_email: '',
+    website: '',
+    plan: 'pro',
+    saving: false,
+    error: '',
+  });
+  const [gymActionModal, setGymActionModal] = useState({
+    open: false,
+    mode: '',
+    gym: null,
+    status: '',
+    reason: '',
+    confirmText: '',
+    busy: false,
+    error: '',
+  });
+
+  const groupedUsers = useMemo(() => {
+    const groupsMap = new Map();
+
+    users.forEach((user) => {
+      const key = `${user.gym_id || user.gym_name || 'ungrouped'}`;
+      if (!groupsMap.has(key)) {
+        groupsMap.set(key, {
+          key,
+          gymName: user.gym_name || 'No Gym',
+          owner: null,
+          staff: [],
+          all: [],
+        });
+      }
+
+      const group = groupsMap.get(key);
+      group.all.push(user);
+
+      const role = String(user.role || '').toUpperCase();
+      if (!group.owner && role === 'OWNER') {
+        group.owner = user;
+      } else {
+        group.staff.push(user);
+      }
+    });
+
+    const groups = Array.from(groupsMap.values()).map((group) => {
+      if (!group.owner && group.all.length > 0) {
+        group.owner = group.all[0];
+        group.staff = group.all.slice(1);
+      }
+      return group;
+    });
+
+    return groups.sort((a, b) => String(a.gymName).localeCompare(String(b.gymName)));
+  }, [users]);
+
+  const handleApiError = (err) => {
+    if (err?.response?.status === 401) onLogout();
+    console.error(err);
+  };
+
+  const loadOverview = async () => {
+    try {
+      const res = await axios.get('/api/superadmin/overview', headers);
+      setOverview(res.data || { stats: {}, recent_activity: [] });
+    } catch (err) {
+      handleApiError(err);
+    }
+  };
+
+  const loadGyms = async () => {
+    try {
+      const res = await axios.get('/api/superadmin/gyms', { ...headers, params: gymFilters });
+      setGyms(Array.isArray(res.data) ? res.data : []);
+    } catch (err) {
+      handleApiError(err);
+    }
+  };
+
+  const loadUsers = async () => {
+    try {
+      const res = await axios.get('/api/superadmin/users', { ...headers, params: userFilters });
+      setUsers(Array.isArray(res.data) ? res.data : []);
+    } catch (err) {
+      handleApiError(err);
+    }
+  };
+
+  const loadTickets = async () => {
+    try {
+      const res = await axios.get('/api/superadmin/support/tickets', { ...headers, params: ticketFilters });
+      setTickets(Array.isArray(res.data) ? res.data : []);
+    } catch (err) {
+      handleApiError(err);
+    }
+  };
+
+  const loadReports = async () => {
+    try {
+      const res = await axios.get('/api/superadmin/reports/light', headers);
+      setReports(res.data || { summary: {}, growth: [] });
+    } catch (err) {
+      handleApiError(err);
+    }
+  };
+
+  const loadSystem = async () => {
+    try {
+      const res = await axios.get('/api/superadmin/system', headers);
+      const payload = res.data || {};
+      setSystem((prev) => ({
+        maintenance_mode: typeof payload.maintenance_mode === 'boolean' ? payload.maintenance_mode : (prev.maintenance_mode || false),
+        maintenance_message: payload.maintenance_message ?? prev.maintenance_message ?? '',
+        feature_flags: payload.feature_flags || prev.feature_flags || {},
+        support_profile: {
+          phone: payload.support_profile?.phone ?? prev.support_profile?.phone ?? '',
+          email: payload.support_profile?.email ?? prev.support_profile?.email ?? '',
+          whatsapp: payload.support_profile?.whatsapp ?? prev.support_profile?.whatsapp ?? '',
+          about: payload.support_profile?.about ?? payload.support_profile?.mission ?? prev.support_profile?.about ?? '',
+          address: payload.support_profile?.address ?? prev.support_profile?.address ?? '',
+          timings: payload.support_profile?.timings ?? payload.support_profile?.support_window ?? prev.support_profile?.timings ?? '',
+        },
+      }));
+    } catch (err) {
+      handleApiError(err);
+    }
+  };
+
+  const loadLogs = async () => {
+    try {
+      const res = await axios.get('/api/superadmin/logs', headers);
+      setLogs(Array.isArray(res.data) ? res.data : []);
+    } catch (err) {
+      handleApiError(err);
+    }
+  };
+
+  const loadAll = async () => {
+    setLoading(true);
+    await Promise.all([loadOverview(), loadGyms(), loadUsers(), loadTickets(), loadReports(), loadSystem(), loadLogs()]);
+    setLoading(false);
+  };
+
+  useEffect(() => { loadAll(); }, []);
+  useEffect(() => { loadGyms(); }, [gymFilters]);
+  useEffect(() => { loadUsers(); }, [userFilters]);
+  useEffect(() => { loadTickets(); }, [ticketFilters]);
+
+  const runGlobalSearch = async () => {
+    if (!search.trim()) {
+      setGlobalSearch({ gyms: [], users: [] });
+      return;
+    }
+    try {
+      const res = await axios.get('/api/superadmin/search', { ...headers, params: { q: search } });
+      setGlobalSearch(res.data || { gyms: [], users: [] });
+    } catch (err) {
+      handleApiError(err);
+    }
+  };
+
+  const applyGymStatus = async (gym, status, reason = '') => {
+    await axios.put(`/api/superadmin/gyms/${gym.id}/status`, { status, reason }, headers);
+    if (selectedGym?.id === gym.id) {
+      const detail = await axios.get(`/api/superadmin/gyms/${gym.id}`, headers);
+      setSelectedGym(detail.data);
+    }
+    loadOverview();
+    loadGyms();
+    loadLogs();
+  };
+
+  const openGymEditModal = (gym) => {
+    setGymEditModal({
+      open: true,
+      gymId: gym.id,
+      gym_name: gym.gym_name || '',
+      phone: gym.phone || '',
+      support_email: gym.support_email || '',
+      website: gym.website || '',
+      plan: gym.plan || 'pro',
+      saving: false,
+      error: '',
+    });
+  };
+
+  const saveGymEdits = async () => {
+    const payload = {
+      gym_name: gymEditModal.gym_name,
+      phone: gymEditModal.phone,
+      support_email: gymEditModal.support_email,
+      website: gymEditModal.website,
+      plan: gymEditModal.plan,
+    };
+
+    if (!payload.gym_name.trim()) {
+      setGymEditModal((prev) => ({ ...prev, error: 'Gym name is required.' }));
+      return;
+    }
+
+    try {
+      setGymEditModal((prev) => ({ ...prev, saving: true, error: '' }));
+      await axios.put(`/api/superadmin/gyms/${gymEditModal.gymId}`, payload, headers);
+      setGymEditModal({
+        open: false,
+        gymId: null,
+        gym_name: '',
+        phone: '',
+        support_email: '',
+        website: '',
+        plan: 'pro',
+        saving: false,
+        error: '',
+      });
+      loadGyms();
+      loadLogs();
+      if (selectedGym?.id === gymEditModal.gymId) {
+        const detail = await axios.get(`/api/superadmin/gyms/${gymEditModal.gymId}`, headers);
+        setSelectedGym(detail.data);
+      }
+    } catch (err) {
+      handleApiError(err);
+      setGymEditModal((prev) => ({ ...prev, saving: false, error: 'Failed to save gym changes.' }));
+    }
+  };
+
+  const viewGym = async (gymId) => {
+    try {
+      const res = await axios.get(`/api/superadmin/gyms/${gymId}`, headers);
+      setSelectedGym(res.data);
+      setShowGymViewModal(true);
+    } catch (err) {
+      handleApiError(err);
+    }
+  };
+
+  const performDeleteGym = async (gym) => {
+    await axios.delete(`/api/superadmin/gyms/${gym.id}`, headers);
+    if (selectedGym?.id === gym.id) {
+      setSelectedGym(null);
+      setShowGymViewModal(false);
+    }
+    loadOverview();
+    loadGyms();
+    loadLogs();
+  };
+
+  const openGymActionModal = (mode, gym, status = '') => {
+    setGymActionModal({
+      open: true,
+      mode,
+      gym,
+      status,
+      reason: '',
+      confirmText: '',
+      busy: false,
+      error: '',
+    });
+  };
+
+  const closeGymActionModal = () => {
+    setGymActionModal({
+      open: false,
+      mode: '',
+      gym: null,
+      status: '',
+      reason: '',
+      confirmText: '',
+      busy: false,
+      error: '',
+    });
+  };
+
+  const runGymAction = async () => {
+    if (!gymActionModal.gym) return;
+
+    if (gymActionModal.mode === 'delete' && gymActionModal.confirmText !== gymActionModal.gym.gym_name) {
+      setGymActionModal((prev) => ({ ...prev, error: 'Gym name does not match. Please type exact name.' }));
+      return;
+    }
+
+    try {
+      setGymActionModal((prev) => ({ ...prev, busy: true, error: '' }));
+
+      if (gymActionModal.mode === 'status') {
+        await applyGymStatus(gymActionModal.gym, gymActionModal.status, gymActionModal.reason || '');
+      }
+
+      if (gymActionModal.mode === 'impersonate') {
+        const res = await axios.post(`/api/superadmin/gyms/${gymActionModal.gym.id}/impersonate`, {}, headers);
+        localStorage.setItem('token', res.data.token);
+        localStorage.setItem('user', JSON.stringify(res.data.user));
+        window.location.href = '/dashboard';
+        return;
+      }
+
+      if (gymActionModal.mode === 'delete') {
+        await performDeleteGym(gymActionModal.gym);
+      }
+
+      closeGymActionModal();
+    } catch (err) {
+      handleApiError(err);
+      setGymActionModal((prev) => ({ ...prev, busy: false, error: 'Action failed. Please try again.' }));
+    }
+  };
+
+  const blockUser = async (user, blocked) => {
+    try {
+      await axios.put(`/api/superadmin/users/${user.id}/block`, { blocked }, headers);
+      loadUsers();
+      loadLogs();
+    } catch (err) {
+      handleApiError(err);
+      alert('Failed to update user status');
+    }
+  };
+
+  const resetPassword = async (user) => {
+    const typed = window.prompt('Enter new password (min 8 chars). Leave empty to auto-generate:', '');
+    try {
+      const res = await axios.post(`/api/superadmin/users/${user.id}/reset-password`, { new_password: typed || undefined }, headers);
+      alert(`Password reset successful. New password: ${res.data.new_password}`);
+      loadLogs();
+    } catch (err) {
+      handleApiError(err);
+      alert('Failed to reset password');
+    }
+  };
+
+  const deleteUser = async (user) => {
+    if (!window.confirm(`Delete user ${user.email} permanently?`)) return;
+    try {
+      await axios.delete(`/api/superadmin/users/${user.id}`, headers);
+      loadUsers();
+      loadLogs();
+    } catch (err) {
+      handleApiError(err);
+      alert('Failed to delete user');
+    }
+  };
+
+  const openTicket = async (id) => {
+    try {
+      const res = await axios.get(`/api/superadmin/support/tickets/${id}`, headers);
+      setSelectedTicket(res.data);
+    } catch (err) {
+      handleApiError(err);
+    }
+  };
+
+  const updateTicket = async (patch) => {
+    if (!selectedTicket?.ticket?.id) return;
+    try {
+      const res = await axios.put(`/api/superadmin/support/tickets/${selectedTicket.ticket.id}`, patch, headers);
+      setSelectedTicket((prev) => ({ ...prev, ticket: { ...prev.ticket, ...res.data } }));
+      loadTickets();
+      loadLogs();
+    } catch (err) {
+      handleApiError(err);
+      alert('Failed to update ticket');
+    }
+  };
+
+  const replyTicket = async () => {
+    if (!ticketReply.trim() || !selectedTicket?.ticket?.id) return;
+    try {
+      const res = await axios.post(`/api/superadmin/support/tickets/${selectedTicket.ticket.id}/reply`, { message: ticketReply }, headers);
+      setSelectedTicket((prev) => ({ ...prev, messages: [...(prev.messages || []), res.data] }));
+      setTicketReply('');
+      loadTickets();
+      loadLogs();
+    } catch (err) {
+      handleApiError(err);
+      alert('Failed to send reply');
+    }
+  };
+
+  const saveSystem = async () => {
+    try {
+      await axios.put('/api/superadmin/system', system, headers);
+      loadSystem();
+      loadLogs();
+      alert('System settings saved');
+    } catch (err) {
+      handleApiError(err);
+      alert('Failed to save system settings');
+    }
+  };
+
+  const sendBroadcast = async () => {
+    if (!broadcast.title.trim() || !broadcast.message.trim()) return;
+    try {
+      await axios.post('/api/superadmin/system/broadcast', broadcast, headers);
+      setBroadcast({ title: '', message: '' });
+      loadLogs();
+      alert('Broadcast sent to all gyms');
+    } catch (err) {
+      handleApiError(err);
+      alert('Failed to send broadcast');
+    }
+  };
+
+  const applyDangerGymDelete = async () => {
+    const gym = gyms.find((g) => String(g.id) === String(dangerGym.gymId));
+    if (!gym) return alert('Invalid gym id');
+    if (dangerGym.confirmName !== gym.gym_name) return alert('Gym name mismatch');
+    await performDeleteGym(gym);
+    setDangerGym({ gymId: '', confirmName: '' });
+  };
+
+  const applyDangerUserDelete = async () => {
+    const user = users.find((u) => String(u.id) === String(dangerUser.userId));
+    if (!user) return alert('Invalid user id');
+    if (dangerUser.confirmText !== 'DELETE') return alert('Type DELETE to confirm');
+    await deleteUser(user);
+    setDangerUser({ userId: '', confirmText: '' });
+  };
+
+  if (loading) {
+    return <div className="h-screen flex items-center justify-center bg-[#050505] text-rose-500 font-black tracking-widest">LOADING HQ...</div>;
+  }
+
+  const stats = overview.stats || {};
+
+  const renderGymManagementSection = () => (
+    <div className="space-y-4">
+      <div className="bg-white/5 border border-white/10 rounded-2xl p-3 grid grid-cols-1 md:grid-cols-5 gap-2">
+        <input className="px-3 py-2.5 rounded-xl bg-black/30 border border-white/10 text-sm" placeholder="Search gym/owner/email" value={gymFilters.q} onChange={(e) => setGymFilters((p) => ({ ...p, q: e.target.value }))} />
+        <select className="px-3 py-2.5 rounded-xl bg-black/30 border border-white/10 text-sm" value={gymFilters.status} onChange={(e) => setGymFilters((p) => ({ ...p, status: e.target.value }))}>
+          <option value="">All Status</option><option value="ACTIVE">Active</option><option value="BLOCKED">Blocked</option><option value="SUSPENDED">Suspended</option>
+        </select>
+        <select className="px-3 py-2.5 rounded-xl bg-black/30 border border-white/10 text-sm" value={gymFilters.plan} onChange={(e) => setGymFilters((p) => ({ ...p, plan: e.target.value }))}>
+          <option value="">All Plans</option><option value="basic">Basic</option><option value="pro">Pro</option><option value="elite">Elite</option>
+        </select>
+        <input type="date" className="px-3 py-2.5 rounded-xl bg-black/30 border border-white/10 text-sm" value={gymFilters.dateFrom} onChange={(e) => setGymFilters((p) => ({ ...p, dateFrom: e.target.value }))} />
+        <input type="date" className="px-3 py-2.5 rounded-xl bg-black/30 border border-white/10 text-sm" value={gymFilters.dateTo} onChange={(e) => setGymFilters((p) => ({ ...p, dateTo: e.target.value }))} />
+      </div>
+
+      <div className="bg-white/5 border border-white/10 rounded-2xl overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm min-w-[1200px]">
+            <thead className="bg-black/40 text-[10px] text-slate-400 uppercase font-black tracking-widest">
+              <tr>
+                <th className="p-4">Gym</th>
+                <th className="p-4">Owner</th>
+                <th className="p-4">Email</th>
+                <th className="p-4">Plan</th>
+                <th className="p-4">Status</th>
+                <th className="p-4">Created</th>
+                <th className="p-4">Last Active</th>
+                <th className="p-4 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-white/5">
+              {gyms.map((g) => (
+                <tr key={g.id} className="hover:bg-white/[0.02]">
+                  <td className="p-4 font-bold text-white">{g.gym_name}</td>
+                  <td className="p-4 text-slate-300">{g.owner_name || '-'}</td>
+                  <td className="p-4 text-slate-400">{g.owner_email || '-'}</td>
+                  <td className="p-4 text-indigo-300 font-bold uppercase">{g.plan}</td>
+                  <td className="p-4"><span className={`px-2 py-1 rounded-full text-[10px] font-black uppercase tracking-wider ${statusClass(g.status)}`}>{g.status}</span></td>
+                  <td className="p-4 text-slate-400">{new Date(g.created_at).toLocaleDateString('en-GB')}</td>
+                  <td className="p-4 text-slate-400">{g.last_active ? new Date(g.last_active).toLocaleString('en-GB') : '-'}</td>
+                  <td className="p-4 text-right">
+                    <div className="flex justify-end gap-2">
+                      <button onClick={() => viewGym(g.id)} className="p-2 rounded-lg border border-white/10 hover:bg-white/10 transition-all" title="View"><Eye size={14} /></button>
+                      <button onClick={() => openGymEditModal(g)} className="p-2 rounded-lg border border-white/10 hover:bg-white/10 transition-all" title="Edit"><Edit3 size={14} /></button>
+                      <button onClick={() => openGymActionModal('status', g, 'BLOCKED')} className="p-2 rounded-lg border border-rose-500/20 text-rose-400 hover:bg-rose-500/20 transition-all" title="Block"><Ban size={14} /></button>
+                      <button onClick={() => openGymActionModal('status', g, 'SUSPENDED')} className="p-2 rounded-lg border border-amber-500/20 text-amber-400 hover:bg-amber-500/20 transition-all" title="Suspend"><PauseCircle size={14} /></button>
+                      <button onClick={() => openGymActionModal('status', g, 'ACTIVE')} className="p-2 rounded-lg border border-emerald-500/20 text-emerald-400 hover:bg-emerald-500/20 transition-all" title="Activate"><Activity size={14} /></button>
+                      <button onClick={() => openGymActionModal('impersonate', g)} className="p-2 rounded-lg border border-indigo-500/20 text-indigo-300 hover:bg-indigo-500/20 transition-all" title="Impersonate"><UserCog size={14} /></button>
+                      <button onClick={() => openGymActionModal('delete', g)} className="p-2 rounded-lg border border-rose-500/20 text-rose-400 hover:bg-rose-500/20 transition-all" title="Delete"><Trash2 size={14} /></button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {gyms.length === 0 && <tr><td colSpan="8" className="p-8 text-center text-slate-500 font-bold">No gyms found.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="min-h-screen bg-[#050505] text-slate-200 font-['Inter'] p-6 lg:p-8">
+      <div className="max-w-7xl mx-auto space-y-6">
+        <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-3 mb-2">
+              <div className="w-8 h-8 rounded-lg bg-rose-500/20 text-rose-500 flex items-center justify-center border border-rose-500/30">
+                <ShieldAlert size={18} />
+              </div>
+              <h1 className="text-3xl font-black text-white tracking-tight">HQ Command</h1>
+            </div>
+            <p className="text-slate-400 text-sm">Super Admin Global Overview & Controls</p>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <div className="relative w-72 max-w-[65vw]">
+              <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && runGlobalSearch()}
+                placeholder="Search gym, user, email"
+                className="w-full pl-9 pr-3 py-2.5 rounded-xl bg-white/5 border border-white/10 text-sm outline-none focus:border-indigo-500/40"
+              />
+            </div>
+            <button onClick={runGlobalSearch} className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-bold">Search</button>
+            <button onClick={loadAll} className="px-3 py-2.5 rounded-xl border border-white/10 text-slate-300 hover:bg-white/5"><RefreshCw size={16} /></button>
+            <button onClick={onLogout} className="flex items-center gap-2 px-4 py-2.5 bg-white/5 hover:bg-rose-500/10 hover:text-rose-400 text-slate-400 rounded-xl font-bold transition-all text-sm border border-white/10">
+              <LogOut size={16} /> Logout
+            </button>
+          </div>
+        </div>
+
+        {(globalSearch.gyms?.length > 0 || globalSearch.users?.length > 0) && (
+          <div className="bg-white/5 border border-white/10 rounded-2xl p-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div>
+              <p className="text-xs uppercase tracking-widest font-black text-slate-400 mb-2">Gyms</p>
+              <div className="space-y-1 max-h-40 overflow-y-auto">
+                {globalSearch.gyms.map((gym) => (
+                  <button key={`s-g-${gym.id}`} onClick={() => { setActiveTab('overview'); viewGym(gym.id); }} className="w-full text-left px-3 py-2 rounded-lg hover:bg-white/5 text-sm">
+                    <span className="font-bold text-white">{gym.gym_name}</span> <span className="text-slate-500">· {gym.plan}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <p className="text-xs uppercase tracking-widest font-black text-slate-400 mb-2">Users</p>
+              <div className="space-y-1 max-h-40 overflow-y-auto">
+                {globalSearch.users.map((u) => (
+                  <button key={`s-u-${u.id}`} onClick={() => setActiveTab('users')} className="w-full text-left px-3 py-2 rounded-lg hover:bg-white/5 text-sm">
+                    <span className="font-bold text-white">{u.full_name}</span> <span className="text-slate-500">· {u.email}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div className="flex flex-wrap gap-2">
+          {TABS.map(({ id, label, icon: Icon }) => (
+            <button
+              key={id}
+              onClick={() => setActiveTab(id)}
+              className={`px-4 py-2 rounded-xl text-sm font-bold border transition-all flex items-center gap-2 ${
+                activeTab === id
+                  ? 'bg-indigo-600 text-white border-indigo-500'
+                  : 'bg-white/5 text-slate-300 border-white/10 hover:bg-white/10'
+              }`}
+            >
+              <Icon size={14} /> {label}
+            </button>
+          ))}
+        </div>
+
+        {activeTab === 'overview' && (
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
+              <div className="bg-white/5 border border-white/10 p-4 rounded-2xl"><p className="text-[10px] text-slate-400 uppercase font-black">Total Gyms</p><h3 className="text-2xl font-black text-white mt-1">{stats.total_gyms || 0}</h3></div>
+              <div className="bg-white/5 border border-white/10 p-4 rounded-2xl"><p className="text-[10px] text-slate-400 uppercase font-black">Active Gyms</p><h3 className="text-2xl font-black text-emerald-400 mt-1">{stats.active_gyms || 0}</h3></div>
+              <div className="bg-white/5 border border-white/10 p-4 rounded-2xl"><p className="text-[10px] text-slate-400 uppercase font-black">Blocked Gyms</p><h3 className="text-2xl font-black text-rose-400 mt-1">{stats.blocked_gyms || 0}</h3></div>
+              <div className="bg-white/5 border border-white/10 p-4 rounded-2xl"><p className="text-[10px] text-slate-400 uppercase font-black">Total Users</p><h3 className="text-2xl font-black text-blue-400 mt-1">{stats.total_users || 0}</h3></div>
+              <div className="bg-white/5 border border-white/10 p-4 rounded-2xl"><p className="text-[10px] text-slate-400 uppercase font-black">Revenue</p><h3 className="text-2xl font-black text-white mt-1">₹{Number(stats.total_revenue || 0).toLocaleString()}</h3></div>
+              <div className="bg-white/5 border border-white/10 p-4 rounded-2xl"><p className="text-[10px] text-slate-400 uppercase font-black">Open Tickets</p><h3 className="text-2xl font-black text-amber-400 mt-1">{stats.open_support_tickets || 0}</h3></div>
+            </div>
+
+            {renderGymManagementSection()}
+          </div>
+        )}
+
+        {activeTab === 'users' && (
+          <div className="space-y-4">
+            <div className="bg-white/5 border border-white/10 rounded-2xl p-3 grid grid-cols-1 md:grid-cols-2 gap-2">
+              <input className="px-3 py-2.5 rounded-xl bg-black/30 border border-white/10 text-sm" placeholder="Search name/email/gym" value={userFilters.q} onChange={(e) => setUserFilters((p) => ({ ...p, q: e.target.value }))} />
+              <select className="px-3 py-2.5 rounded-xl bg-black/30 border border-white/10 text-sm" value={userFilters.status} onChange={(e) => setUserFilters((p) => ({ ...p, status: e.target.value }))}>
+                <option value="">All Status</option><option value="ACTIVE">Active</option><option value="BLOCKED">Blocked</option>
+              </select>
+            </div>
+
+            <div className="space-y-3">
+              {groupedUsers.map((group) => {
+                const owner = group.owner;
+                const isExpanded = !!expandedGyms[group.key];
+                return (
+                  <div key={group.key} className="bg-white/5 border border-white/10 rounded-2xl overflow-hidden">
+                    <div className="px-4 py-3 bg-black/30 border-b border-white/10 flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-[10px] uppercase tracking-widest font-black text-slate-400">Gym</p>
+                        <p className="text-sm font-black text-white">{group.gymName}</p>
+                      </div>
+                      <div className="flex items-center gap-2 text-xs">
+                        <span className="px-2 py-1 rounded-full border border-indigo-500/30 bg-indigo-500/10 text-indigo-300 font-black">Owner: {owner ? 1 : 0}</span>
+                        <span className="px-2 py-1 rounded-full border border-white/20 bg-white/5 text-slate-300 font-black">Staff: {group.staff.length}</span>
+                        <button onClick={() => setExpandedGyms((prev) => ({ ...prev, [group.key]: !isExpanded }))} className="ml-1 px-2.5 py-1.5 rounded-lg border border-white/10 text-slate-300 hover:bg-white/10 flex items-center gap-1.5 font-bold">
+                          {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                          {isExpanded ? 'Hide Team' : 'Show Team'}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-sm min-w-[1000px]">
+                        <thead className="bg-black/20 text-[10px] text-slate-400 uppercase font-black tracking-widest">
+                          <tr><th className="p-4">Name</th><th className="p-4">Email</th><th className="p-4">Role</th><th className="p-4">Status</th><th className="p-4">Last Login</th><th className="p-4 text-right">Actions</th></tr>
+                        </thead>
+                        <tbody className="divide-y divide-white/5">
+                          {owner && (
+                            <tr className="hover:bg-white/[0.02] bg-indigo-500/[0.06]">
+                              <td className="p-4 font-bold text-white">{owner.full_name}</td>
+                              <td className="p-4 text-slate-400">{owner.email}</td>
+                              <td className="p-4 text-indigo-300 font-bold uppercase">OWNER{owner.staff_role ? `/${owner.staff_role}` : ''}</td>
+                              <td className="p-4"><span className={`px-2 py-1 rounded-full text-[10px] font-black uppercase tracking-wider ${owner.is_active ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-rose-500/20 text-rose-400 border border-rose-500/30'}`}>{owner.is_active ? 'ACTIVE' : 'BLOCKED'}</span></td>
+                              <td className="p-4 text-slate-400">{owner.last_login_at ? new Date(owner.last_login_at).toLocaleString('en-GB') : '-'}</td>
+                              <td className="p-4 text-right">
+                                <div className="flex justify-end gap-2">
+                                  <button onClick={() => resetPassword(owner)} className="p-2 rounded-lg border border-indigo-500/20 text-indigo-300 hover:bg-indigo-500/20" title="Reset Password"><KeyRound size={14} /></button>
+                                  <button onClick={() => blockUser(owner, owner.is_active)} className="p-2 rounded-lg border border-amber-500/20 text-amber-300 hover:bg-amber-500/20" title="Block/Unblock"><Ban size={14} /></button>
+                                  <button onClick={() => deleteUser(owner)} className="p-2 rounded-lg border border-rose-500/20 text-rose-400 hover:bg-rose-500/20" title="Delete"><Trash2 size={14} /></button>
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+
+                          {isExpanded && group.staff.map((u) => (
+                            <tr key={u.id} className="hover:bg-white/[0.02]">
+                              <td className="p-4 font-bold text-white pl-8">↳ {u.full_name}</td>
+                              <td className="p-4 text-slate-400">{u.email}</td>
+                              <td className="p-4 text-indigo-300 font-bold uppercase">{u.role}{u.staff_role ? `/${u.staff_role}` : ''}</td>
+                              <td className="p-4"><span className={`px-2 py-1 rounded-full text-[10px] font-black uppercase tracking-wider ${u.is_active ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-rose-500/20 text-rose-400 border border-rose-500/30'}`}>{u.is_active ? 'ACTIVE' : 'BLOCKED'}</span></td>
+                              <td className="p-4 text-slate-400">{u.last_login_at ? new Date(u.last_login_at).toLocaleString('en-GB') : '-'}</td>
+                              <td className="p-4 text-right">
+                                <div className="flex justify-end gap-2">
+                                  <button onClick={() => resetPassword(u)} className="p-2 rounded-lg border border-indigo-500/20 text-indigo-300 hover:bg-indigo-500/20" title="Reset Password"><KeyRound size={14} /></button>
+                                  <button onClick={() => blockUser(u, u.is_active)} className="p-2 rounded-lg border border-amber-500/20 text-amber-300 hover:bg-amber-500/20" title="Block/Unblock"><Ban size={14} /></button>
+                                  <button onClick={() => deleteUser(u)} className="p-2 rounded-lg border border-rose-500/20 text-rose-400 hover:bg-rose-500/20" title="Delete"><Trash2 size={14} /></button>
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+
+                          {isExpanded && group.staff.length === 0 && (
+                            <tr>
+                              <td colSpan="6" className="p-6 text-center text-slate-500 font-bold">No staff found under this gym owner.</td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                );
+              })}
+
+              {groupedUsers.length === 0 && (
+                <div className="bg-white/5 border border-white/10 rounded-2xl p-8 text-center text-slate-500 font-bold">No users found.</div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'support' && (
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+            <div className="space-y-3">
+              <div className="bg-white/5 border border-white/10 rounded-2xl p-3 grid grid-cols-1 md:grid-cols-3 gap-2">
+                <input className="px-3 py-2.5 rounded-xl bg-black/30 border border-white/10 text-sm" placeholder="Search ticket/gym/user" value={ticketFilters.q} onChange={(e) => setTicketFilters((p) => ({ ...p, q: e.target.value }))} />
+                <select className="px-3 py-2.5 rounded-xl bg-black/30 border border-white/10 text-sm" value={ticketFilters.status} onChange={(e) => setTicketFilters((p) => ({ ...p, status: e.target.value }))}><option value="">All Status</option><option value="OPEN">Open</option><option value="PENDING">Pending</option><option value="CLOSED">Closed</option></select>
+                <select className="px-3 py-2.5 rounded-xl bg-black/30 border border-white/10 text-sm" value={ticketFilters.priority} onChange={(e) => setTicketFilters((p) => ({ ...p, priority: e.target.value }))}><option value="">All Priority</option><option value="LOW">Low</option><option value="MEDIUM">Medium</option><option value="HIGH">High</option></select>
+              </div>
+
+              <div className="bg-white/5 border border-white/10 rounded-2xl overflow-hidden">
+                <div className="max-h-[560px] overflow-y-auto">
+                  {tickets.map((t) => (
+                    <button key={t.id} onClick={() => openTicket(t.id)} className="w-full text-left p-3 border-b border-white/5 hover:bg-white/[0.03]">
+                      <div className="flex justify-between items-start gap-2">
+                        <p className="font-black text-white text-sm truncate">#{t.id} · {t.subject}</p>
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase ${statusClass(t.status)}`}>{t.status}</span>
+                      </div>
+                      <p className="text-xs text-slate-400 mt-1">{t.gym_name} · {t.user_email || t.user_name || '-'} · {new Date(t.created_at).toLocaleString('en-GB')}</p>
+                    </button>
+                  ))}
+                  {tickets.length === 0 && <div className="p-8 text-center text-slate-500 font-bold">No tickets found.</div>}
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-white/5 border border-white/10 rounded-2xl p-4">
+              {!selectedTicket ? (
+                <div className="h-full flex items-center justify-center text-slate-500 font-bold">Select a ticket to view details</div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="p-3 rounded-xl bg-black/30 border border-white/10">
+                    <p className="font-black text-white">#{selectedTicket.ticket.id} · {selectedTicket.ticket.subject}</p>
+                    <p className="text-xs text-slate-400 mt-1">{selectedTicket.ticket.gym_name} · {selectedTicket.ticket.user_email || selectedTicket.ticket.user_name || '-'}</p>
+                    <p className="text-sm text-slate-300 mt-2">{selectedTicket.ticket.description}</p>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <select className="px-3 py-2 rounded-lg bg-black/30 border border-white/10 text-sm" value={selectedTicket.ticket.status || 'OPEN'} onChange={(e) => updateTicket({ status: e.target.value })}>
+                      <option value="OPEN">Open</option><option value="PENDING">Pending</option><option value="CLOSED">Closed</option>
+                    </select>
+                    <select className="px-3 py-2 rounded-lg bg-black/30 border border-white/10 text-sm" value={selectedTicket.ticket.priority || 'MEDIUM'} onChange={(e) => updateTicket({ priority: e.target.value })}>
+                      <option value="LOW">Low</option><option value="MEDIUM">Medium</option><option value="HIGH">High</option>
+                    </select>
+                  </div>
+
+                  <div className="max-h-72 overflow-y-auto space-y-2">
+                    {(selectedTicket.messages || []).map((m) => (
+                      <div key={m.id} className="p-2.5 rounded-xl bg-black/30 border border-white/10">
+                        <p className="text-[11px] text-indigo-300 font-black uppercase tracking-widest">{m.author_type}</p>
+                        <p className="text-sm text-slate-200 mt-1">{m.message}</p>
+                        <p className="text-[11px] text-slate-500 mt-1">{new Date(m.created_at).toLocaleString('en-GB')}</p>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="flex gap-2">
+                    <input value={ticketReply} onChange={(e) => setTicketReply(e.target.value)} placeholder="Reply to ticket..." className="flex-1 px-3 py-2.5 rounded-xl bg-black/30 border border-white/10 text-sm" />
+                    <button onClick={replyTicket} className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-sm flex items-center gap-1"><Send size={13} /> Reply</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'reports' && (
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div className="bg-white/5 border border-white/10 rounded-2xl p-4"><p className="text-[10px] text-slate-400 uppercase font-black">Total Revenue</p><p className="text-2xl font-black text-white mt-1">₹{Number(reports.summary?.total_revenue || 0).toLocaleString()}</p></div>
+              <div className="bg-white/5 border border-white/10 rounded-2xl p-4"><p className="text-[10px] text-slate-400 uppercase font-black">Active Gyms Growth (This Month)</p><p className="text-2xl font-black text-emerald-400 mt-1">{reports.summary?.gyms_this_month || 0}</p></div>
+              <div className="bg-white/5 border border-white/10 rounded-2xl p-4"><p className="text-[10px] text-slate-400 uppercase font-black">Churn Gyms</p><p className="text-2xl font-black text-rose-400 mt-1">{reports.summary?.churn_gyms || 0}</p></div>
+            </div>
+            <div className="bg-white/5 border border-white/10 rounded-2xl p-4">
+              <p className="text-xs uppercase tracking-widest font-black text-slate-400 mb-3">Active Gyms Growth Trend</p>
+              <div className="space-y-2">
+                {(reports.growth || []).map((g) => (
+                  <div key={g.month} className="flex justify-between px-3 py-2 rounded-xl bg-black/30 border border-white/5">
+                    <span className="text-slate-300 font-bold">{g.month}</span>
+                    <span className="text-indigo-300 font-black">{g.gyms}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'system' && (
+          <div className="space-y-4">
+            <div className="bg-white/5 border border-white/10 rounded-2xl p-4 space-y-3">
+              <p className="text-xs uppercase tracking-widest font-black text-slate-400">Global Controls</p>
+              <label className="flex items-center justify-between p-3 rounded-xl bg-black/30 border border-white/10">
+                <span className="font-bold text-slate-200">Maintenance Mode</span>
+                <input type="checkbox" checked={!!system.maintenance_mode} onChange={(e) => setSystem((p) => ({ ...p, maintenance_mode: e.target.checked }))} />
+              </label>
+              <input className="w-full px-3 py-2.5 rounded-xl bg-black/30 border border-white/10 text-sm" placeholder="Maintenance message" value={system.maintenance_message || ''} onChange={(e) => setSystem((p) => ({ ...p, maintenance_message: e.target.value }))} />
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                {['support', 'attendance', 'billing'].map((key) => (
+                  <label key={key} className="flex items-center justify-between p-3 rounded-xl bg-black/30 border border-white/10">
+                    <span className="font-bold text-slate-300 capitalize">{key}</span>
+                    <input type="checkbox" checked={!!system.feature_flags?.[key]} onChange={(e) => setSystem((p) => ({ ...p, feature_flags: { ...(p.feature_flags || {}), [key]: e.target.checked } }))} />
+                  </label>
+                ))}
+              </div>
+
+              <button onClick={saveSystem} className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-sm">Save Settings</button>
+            </div>
+
+            <div className="bg-white/5 border border-white/10 rounded-2xl p-4 space-y-3">
+              <p className="text-xs uppercase tracking-widest font-black text-slate-400">Global Help & Support Contact</p>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                <input className="px-3 py-2.5 rounded-xl bg-black/30 border border-white/10 text-sm" placeholder="Support phone" value={system.support_profile?.phone || ''} onChange={(e) => setSystem((p) => ({ ...p, support_profile: { ...(p.support_profile || {}), phone: e.target.value } }))} />
+                <input className="px-3 py-2.5 rounded-xl bg-black/30 border border-white/10 text-sm" placeholder="Support email" value={system.support_profile?.email || ''} onChange={(e) => setSystem((p) => ({ ...p, support_profile: { ...(p.support_profile || {}), email: e.target.value } }))} />
+                <input className="px-3 py-2.5 rounded-xl bg-black/30 border border-white/10 text-sm" placeholder="WhatsApp" value={system.support_profile?.whatsapp || ''} onChange={(e) => setSystem((p) => ({ ...p, support_profile: { ...(p.support_profile || {}), whatsapp: e.target.value } }))} />
+                <input className="px-3 py-2.5 rounded-xl bg-black/30 border border-white/10 text-sm" placeholder="Support timings" value={system.support_profile?.timings || ''} onChange={(e) => setSystem((p) => ({ ...p, support_profile: { ...(p.support_profile || {}), timings: e.target.value } }))} />
+              </div>
+
+              <input className="w-full px-3 py-2.5 rounded-xl bg-black/30 border border-white/10 text-sm" placeholder="Support address" value={system.support_profile?.address || ''} onChange={(e) => setSystem((p) => ({ ...p, support_profile: { ...(p.support_profile || {}), address: e.target.value } }))} />
+              <textarea className="w-full px-3 py-2.5 rounded-xl bg-black/30 border border-white/10 text-sm min-h-[88px]" placeholder="About support (shown in Know Us)" value={system.support_profile?.about || ''} onChange={(e) => setSystem((p) => ({ ...p, support_profile: { ...(p.support_profile || {}), about: e.target.value } }))} />
+
+              <button onClick={saveSystem} className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-sm">Save Support Profile</button>
+            </div>
+
+            <div className="bg-white/5 border border-white/10 rounded-2xl p-4 space-y-3">
+              <p className="text-xs uppercase tracking-widest font-black text-slate-400">Notification Broadcast</p>
+              <input className="w-full px-3 py-2.5 rounded-xl bg-black/30 border border-white/10 text-sm" placeholder="Broadcast title" value={broadcast.title} onChange={(e) => setBroadcast((p) => ({ ...p, title: e.target.value }))} />
+              <textarea className="w-full px-3 py-2.5 rounded-xl bg-black/30 border border-white/10 text-sm min-h-[100px]" placeholder="Broadcast message" value={broadcast.message} onChange={(e) => setBroadcast((p) => ({ ...p, message: e.target.value }))} />
+              <button onClick={sendBroadcast} className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm">Send to all gyms</button>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'logs' && (
+          <div className="bg-white/5 border border-white/10 rounded-2xl overflow-hidden">
+            <div className="max-h-[680px] overflow-y-auto">
+              <table className="w-full text-left text-sm">
+                <thead className="bg-black/40 text-[10px] text-slate-400 uppercase font-black tracking-widest">
+                  <tr><th className="p-4">Action</th><th className="p-4">Target</th><th className="p-4">Time</th><th className="p-4">Details</th></tr>
+                </thead>
+                <tbody className="divide-y divide-white/5">
+                  {logs.map((l) => (
+                    <tr key={l.id} className="hover:bg-white/[0.02]">
+                      <td className="p-4 font-black text-white">{l.action}</td>
+                      <td className="p-4 text-slate-300">{l.target_type} · {l.target_label || l.target_id || '-'}</td>
+                      <td className="p-4 text-slate-400">{new Date(l.created_at).toLocaleString('en-GB')}</td>
+                      <td className="p-4 text-slate-500 text-xs">{typeof l.details === 'object' ? JSON.stringify(l.details) : String(l.details || '-')}</td>
+                    </tr>
+                  ))}
+                  {logs.length === 0 && <tr><td colSpan="4" className="p-8 text-center text-slate-500 font-bold">No logs found.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'danger' && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="bg-rose-500/10 border border-rose-500/30 rounded-2xl p-4 space-y-3">
+              <p className="text-xs uppercase tracking-widest font-black text-rose-300">Delete Gym Permanently</p>
+              <input className="w-full px-3 py-2.5 rounded-xl bg-black/40 border border-rose-500/30 text-sm" placeholder="Gym ID" value={dangerGym.gymId} onChange={(e) => setDangerGym((p) => ({ ...p, gymId: e.target.value }))} />
+              <input className="w-full px-3 py-2.5 rounded-xl bg-black/40 border border-rose-500/30 text-sm" placeholder="Type exact gym name" value={dangerGym.confirmName} onChange={(e) => setDangerGym((p) => ({ ...p, confirmName: e.target.value }))} />
+              <button onClick={applyDangerGymDelete} className="px-4 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-sm flex items-center gap-2"><Trash2 size={14} /> Delete Gym</button>
+            </div>
+
+            <div className="bg-rose-500/10 border border-rose-500/30 rounded-2xl p-4 space-y-3">
+              <p className="text-xs uppercase tracking-widest font-black text-rose-300">Delete User Permanently</p>
+              <input className="w-full px-3 py-2.5 rounded-xl bg-black/40 border border-rose-500/30 text-sm" placeholder="User ID" value={dangerUser.userId} onChange={(e) => setDangerUser((p) => ({ ...p, userId: e.target.value }))} />
+              <input className="w-full px-3 py-2.5 rounded-xl bg-black/40 border border-rose-500/30 text-sm" placeholder="Type DELETE to confirm" value={dangerUser.confirmText} onChange={(e) => setDangerUser((p) => ({ ...p, confirmText: e.target.value }))} />
+              <button onClick={applyDangerUserDelete} className="px-4 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-sm flex items-center gap-2"><Trash2 size={14} /> Delete User</button>
+            </div>
+          </div>
+        )}
+
+        {showGymViewModal && selectedGym && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70">
+            <div className="w-full max-w-3xl bg-[#0d0d0f] border border-white/10 rounded-2xl p-5 space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs uppercase tracking-widest font-black text-slate-400">Gym Detail</p>
+                  <h3 className="text-xl font-black text-white mt-1">{selectedGym.gym_name}</h3>
+                </div>
+                <button onClick={() => setShowGymViewModal(false)} className="w-9 h-9 rounded-lg border border-white/10 text-slate-300 hover:bg-white/10">✕</button>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
+                <div className="bg-black/30 rounded-xl p-3 border border-white/10"><p className="text-slate-500">Owner</p><p className="font-black text-white">{selectedGym.owner_name || '-'}</p><p className="text-slate-400 mt-0.5">{selectedGym.owner_email || '-'}</p></div>
+                <div className="bg-black/30 rounded-xl p-3 border border-white/10"><p className="text-slate-500">Plan / Status</p><p className="font-black text-white uppercase">{selectedGym.plan} · {selectedGym.status}</p></div>
+                <div className="bg-black/30 rounded-xl p-3 border border-white/10"><p className="text-slate-500">Phone</p><p className="font-black text-white">{selectedGym.phone || '-'}</p></div>
+                <div className="bg-black/30 rounded-xl p-3 border border-white/10"><p className="text-slate-500">Members</p><p className="font-black text-white">{selectedGym.total_members}</p></div>
+                <div className="bg-black/30 rounded-xl p-3 border border-white/10"><p className="text-slate-500">Revenue</p><p className="font-black text-white">₹{Number(selectedGym.total_revenue || 0).toLocaleString()}</p></div>
+                <div className="bg-black/30 rounded-xl p-3 border border-white/10"><p className="text-slate-500">Last Activity</p><p className="font-black text-white">{selectedGym.last_active ? new Date(selectedGym.last_active).toLocaleString('en-GB') : '-'}</p></div>
+                <div className="bg-black/30 rounded-xl p-3 border border-white/10 md:col-span-2"><p className="text-slate-500">Support Email</p><p className="font-black text-white">{selectedGym.support_email || '-'}</p></div>
+                <div className="bg-black/30 rounded-xl p-3 border border-white/10"><p className="text-slate-500">Website</p><p className="font-black text-white truncate">{selectedGym.website || '-'}</p></div>
+              </div>
+
+              <div className="flex justify-end">
+                <button onClick={() => setShowGymViewModal(false)} className="px-4 py-2.5 rounded-xl bg-white/5 border border-white/10 text-slate-300 hover:bg-white/10 text-sm font-bold">Close</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {gymEditModal.open && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70">
+            <div className="w-full max-w-2xl bg-[#0d0d0f] border border-white/10 rounded-2xl p-5 space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs uppercase tracking-widest font-black text-slate-400">Edit Gym</p>
+                  <h3 className="text-xl font-black text-white mt-1">Update gym details</h3>
+                </div>
+                <button onClick={() => setGymEditModal((prev) => ({ ...prev, open: false }))} className="w-9 h-9 rounded-lg border border-white/10 text-slate-300 hover:bg-white/10">✕</button>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <input className="px-3 py-2.5 rounded-xl bg-black/30 border border-white/10 text-sm" placeholder="Gym Name" value={gymEditModal.gym_name} onChange={(e) => setGymEditModal((prev) => ({ ...prev, gym_name: e.target.value }))} />
+                <input className="px-3 py-2.5 rounded-xl bg-black/30 border border-white/10 text-sm" placeholder="Phone" value={gymEditModal.phone} onChange={(e) => setGymEditModal((prev) => ({ ...prev, phone: e.target.value }))} />
+                <input className="px-3 py-2.5 rounded-xl bg-black/30 border border-white/10 text-sm" placeholder="Support Email" value={gymEditModal.support_email} onChange={(e) => setGymEditModal((prev) => ({ ...prev, support_email: e.target.value }))} />
+                <select className="px-3 py-2.5 rounded-xl bg-black/30 border border-white/10 text-sm" value={gymEditModal.plan} onChange={(e) => setGymEditModal((prev) => ({ ...prev, plan: e.target.value }))}>
+                  <option value="basic">Basic</option>
+                  <option value="pro">Pro</option>
+                  <option value="elite">Elite</option>
+                </select>
+                <input className="px-3 py-2.5 rounded-xl bg-black/30 border border-white/10 text-sm md:col-span-2" placeholder="Website" value={gymEditModal.website} onChange={(e) => setGymEditModal((prev) => ({ ...prev, website: e.target.value }))} />
+              </div>
+
+              {gymEditModal.error && <p className="text-sm text-rose-400 font-semibold">{gymEditModal.error}</p>}
+
+              <div className="flex justify-end gap-2">
+                <button onClick={() => setGymEditModal((prev) => ({ ...prev, open: false }))} className="px-4 py-2.5 rounded-xl bg-white/5 border border-white/10 text-slate-300 hover:bg-white/10 text-sm font-bold">Cancel</button>
+                <button onClick={saveGymEdits} disabled={gymEditModal.saving} className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 text-white text-sm font-bold">{gymEditModal.saving ? 'Saving...' : 'Save Changes'}</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {gymActionModal.open && gymActionModal.gym && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70">
+            <div className="w-full max-w-xl bg-[#0d0d0f] border border-white/10 rounded-2xl p-5 space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs uppercase tracking-widest font-black text-slate-400">Confirm Action</p>
+                  <h3 className="text-xl font-black text-white mt-1">
+                    {gymActionModal.mode === 'status' && `${gymActionModal.status} gym`}
+                    {gymActionModal.mode === 'impersonate' && 'Impersonate gym owner'}
+                    {gymActionModal.mode === 'delete' && 'Delete gym permanently'}
+                  </h3>
+                </div>
+                <button onClick={closeGymActionModal} className="w-9 h-9 rounded-lg border border-white/10 text-slate-300 hover:bg-white/10">✕</button>
+              </div>
+
+              <div className="p-3 rounded-xl bg-black/30 border border-white/10 text-sm text-slate-300">
+                Target gym: <span className="font-black text-white">{gymActionModal.gym.gym_name}</span>
+              </div>
+
+              {gymActionModal.mode === 'status' && (
+                <div>
+                  <label className="text-xs uppercase tracking-widest font-black text-slate-400">Reason (optional)</label>
+                  <textarea value={gymActionModal.reason} onChange={(e) => setGymActionModal((prev) => ({ ...prev, reason: e.target.value }))} className="mt-2 w-full min-h-[90px] px-3 py-2.5 rounded-xl bg-black/30 border border-white/10 text-sm" placeholder="Add action reason for audit logs" />
+                </div>
+              )}
+
+              {gymActionModal.mode === 'delete' && (
+                <div>
+                  <label className="text-xs uppercase tracking-widest font-black text-slate-400">Type gym name to confirm</label>
+                  <input value={gymActionModal.confirmText} onChange={(e) => setGymActionModal((prev) => ({ ...prev, confirmText: e.target.value }))} className="mt-2 w-full px-3 py-2.5 rounded-xl bg-black/30 border border-rose-500/30 text-sm" placeholder={gymActionModal.gym.gym_name} />
+                </div>
+              )}
+
+              {gymActionModal.error && <p className="text-sm text-rose-400 font-semibold">{gymActionModal.error}</p>}
+
+              <div className="flex justify-end gap-2">
+                <button onClick={closeGymActionModal} className="px-4 py-2.5 rounded-xl bg-white/5 border border-white/10 text-slate-300 hover:bg-white/10 text-sm font-bold">Cancel</button>
+                <button
+                  onClick={runGymAction}
+                  disabled={gymActionModal.busy}
+                  className={`px-4 py-2.5 rounded-xl text-white text-sm font-bold disabled:opacity-60 ${gymActionModal.mode === 'delete' ? 'bg-rose-600 hover:bg-rose-500' : gymActionModal.mode === 'impersonate' ? 'bg-indigo-600 hover:bg-indigo-500' : 'bg-amber-600 hover:bg-amber-500'}`}
+                >
+                  {gymActionModal.busy ? 'Processing...' : gymActionModal.mode === 'delete' ? 'Delete Gym' : gymActionModal.mode === 'impersonate' ? 'Continue' : 'Confirm'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export default SuperAdminDashboard;

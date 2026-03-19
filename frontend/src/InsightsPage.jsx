@@ -8,8 +8,17 @@ import {
   TrendingUp, Users, DollarSign, Activity, AlertTriangle, 
   ArrowUpRight, ArrowDownRight, Download, CreditCard, 
   UserMinus, UserCheck, Clock, Target, ShieldCheck,
-  MessageSquare, Phone
+  MessageSquare, Phone, Award
 } from 'lucide-react';
+
+const extractArray = (value, keys = []) => {
+  if (Array.isArray(value)) return value;
+  if (!value || typeof value !== 'object') return [];
+  for (const key of keys) {
+    if (Array.isArray(value[key])) return value[key];
+  }
+  return [];
+};
 
 // --- UTILITY COMPONENTS ---
 
@@ -39,24 +48,27 @@ const KPICard = ({ title, value, change, trend, icon: Icon, color }) => (
   </Card>
 );
 
-const Flame = ({size, className}) => (
-    <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0 1.1.2 2.2.5 3.3a9 9 0 0 0 12.1-4.7"/></svg>
-);
+const formatHour = (h) => {
+  if (h === 0) return '12AM';
+  if (h < 12) return `${h}AM`;
+  if (h === 12) return '12PM';
+  return `${h - 12}PM`;
+};
 
 // --- MAIN PAGE COMPONENT ---
 
 const InsightsPage = ({ token }) => {
   const [activeTab, setActiveTab] = useState('revenue');
   const [members, setMembers] = useState([]);
+  const [attendanceSummary, setAttendanceSummary] = useState([]);
   const [loading, setLoading] = useState(true);
   const [dateRange, setDateRange] = useState('6M');
 
   // --- ACTION FUNCTIONS ---
   const sendWhatsApp = (member, type) => {
-    const gymName = "Gym Dashboard"; 
+    const gymName = "GymVault"; 
     let message = "";
     
-    // Updated to include the specific "expired" template
     if (type === 'expiring') {
       message = `Hi ${member.full_name}, your membership at ${gymName} is expiring in ${member.days_left} days. Renew now to keep your fitness journey going!`;
     } else if (type === 'expired') {
@@ -70,18 +82,17 @@ const InsightsPage = ({ token }) => {
 
   const handleCall = (phoneNumber) => window.open(`tel:${phoneNumber}`, '_self');
 
-  const handleDownloadReport = () => {
-    // This triggers the browser's native "Save as PDF" / Print dialog
-    window.print();
-  };
+  const handleDownloadReport = () => window.print();
 
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const res = await axios.get('http://localhost:5000/api/members', {
-          headers: { 'x-auth-token': token }
-        });
-        setMembers(res.data);
+        const [membersRes, attendanceRes] = await Promise.all([
+          axios.get('/api/members', { headers: { 'x-auth-token': token } }),
+          axios.get('/api/attendance/summary', { headers: { 'x-auth-token': token } })
+        ]);
+        setMembers(extractArray(membersRes.data, ['members', 'rows', 'items']));
+        setAttendanceSummary(extractArray(attendanceRes.data, ['summary', 'attendance', 'rows', 'items']));
       } catch (err) {
         console.error("Failed to load insights data", err);
       } finally {
@@ -97,7 +108,6 @@ const InsightsPage = ({ token }) => {
 
     const today = new Date();
     
-    // A. STRATEGIC REVENUE CALCULATIONS
     let totalRevenue = 0;
     let revenueByMonth = {};
     let planPerformance = {};
@@ -107,7 +117,6 @@ const InsightsPage = ({ token }) => {
       const paid = parseFloat(m.total_paid || 0);
       totalRevenue += paid;
 
-      // 1. Calculate Plan Performance
       if (m.plan_name) {
         if (!planPerformance[m.plan_name]) {
           planPerformance[m.plan_name] = { name: m.plan_name, revenue: 0, users: 0 };
@@ -116,12 +125,10 @@ const InsightsPage = ({ token }) => {
         if (m.membership_status === 'ACTIVE') planPerformance[m.plan_name].users += 1;
       }
 
-      // 2. Calculate Churn Cost
       if (m.membership_status === 'EXPIRED') {
         lostRevenue += paid > 0 ? paid : 1500; 
       }
 
-      // 3. Historical Revenue Trend
       if (m.payment_history && Array.isArray(m.payment_history)) {
         m.payment_history.forEach(pay => {
           const date = new Date(pay.payment_date);
@@ -133,17 +140,22 @@ const InsightsPage = ({ token }) => {
 
     const activeMembers = members.filter(m => m.membership_status === 'ACTIVE').length;
     const expiredMembers = members.filter(m => m.membership_status === 'EXPIRED').length;
-    const totalMembers = members.length;
     
-    // Core Business Metrics
+    // Ignore UNPAID members so they don't drag down the retention rate
+    const totalPayingMembers = activeMembers + expiredMembers;
+    
     const arpu = activeMembers > 0 ? Math.round(totalRevenue / activeMembers) : 0;
-    const retentionRate = totalMembers > 0 ? ((activeMembers / totalMembers) * 100).toFixed(1) : 0;
-    const churnRate = (100 - retentionRate).toFixed(1);
+    const retentionRate = totalPayingMembers > 0 ? ((activeMembers / totalPayingMembers) * 100).toFixed(1) : 0;
+    const churnRate = totalPayingMembers > 0 ? (100 - retentionRate).toFixed(1) : 0;
     
-    // Sort plans by highest revenue generator
     const topPlans = Object.values(planPerformance).sort((a, b) => b.revenue - a.revenue);
 
-   // Determine how many months to show based on the active filter
+    // Top active members based on actual lifetime spend, removing fake random streaks
+    const topActiveMembers = members
+      .filter(m => m.membership_status === 'ACTIVE')
+      .sort((a, b) => parseFloat(b.total_paid || 0) - parseFloat(a.total_paid || 0))
+      .slice(0, 5);
+
     let monthsToShow = 6;
     if (dateRange === '1M') monthsToShow = 1;
     if (dateRange === '3M') monthsToShow = 3;
@@ -154,18 +166,23 @@ const InsightsPage = ({ token }) => {
       name: key,
       revenue: revenueByMonth[key]
     })).slice(-monthsToShow);
-    // B. RISK ANALYSIS
-    // Captures both members about to expire AND those already expired, skipping unpaid new members
+
+    // B. RISK ANALYSIS (Strictly ignores UNPAID)
     const criticalMembers = members.filter(m => m.days_left <= 7 && m.membership_status !== 'UNPAID');
-    
-    // Revenue at risk only calculates for those > 0 days, because expired is already counted in 'lost revenue'
     const revenueAtRisk = criticalMembers.filter(m => m.days_left > 0).length * (arpu > 0 ? arpu : 1500); 
 
     const ghostMembers = members.filter(m => {
-        if (!m.last_visit) return true;
-        const daysSince = Math.floor((today - new Date(m.last_visit)) / (1000 * 60 * 60 * 24));
-        return daysSince > 4 && m.membership_status === 'ACTIVE';
+      if (m.membership_status !== 'ACTIVE') return false; // Unpaid/Expired are ignored here
+      if (!m.last_visit) return true; 
+      const daysSince = Math.floor((today - new Date(m.last_visit)) / (1000 * 60 * 60 * 24));
+      return daysSince > 4;
     });
+
+    // Map real attendance data for the chart
+    const heatmapData = attendanceSummary.map(d => ({
+      time: formatHour(d.hour),
+      count: parseInt(d.count)
+    }));
 
     return {
       revenue: {
@@ -188,15 +205,19 @@ const InsightsPage = ({ token }) => {
         expiringList: criticalMembers,
         ghostCount: ghostMembers.length,
         ghostList: ghostMembers.slice(0, 5)
+      },
+      attendance: {
+        heatmap: heatmapData,
+        topMembers: topActiveMembers
       }
     };
-  }, [members]);
+  }, [members, attendanceSummary, dateRange]);
 
   if (loading) return <div className="flex h-screen items-center justify-center text-slate-400 font-bold animate-pulse">Loading Business Intelligence...</div>;
   if (!analytics) return <div className="p-10 text-center text-slate-500 font-bold">No Data Available. Add members to see insights.</div>;
 
   return (
-    <div className="min-h-screen bg-slate-50/50 p-6 md:p-8 space-y-8 font-inter text-slate-900">
+    <div className="min-h-screen p-0 space-y-8 font-inter text-slate-900">
       
       {/* 1. HEADER */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
@@ -234,7 +255,7 @@ const InsightsPage = ({ token }) => {
       </div>
 
       {/* 3. TABS */}
-      <div className="border-b border-slate-200 flex gap-8">
+      <div className="border-b border-slate-200 flex gap-8 overflow-x-auto">
         {[
           { id: 'revenue', label: 'Revenue & Finance', icon: DollarSign },
           { id: 'attendance', label: 'Attendance & Trends', icon: Users },
@@ -244,7 +265,7 @@ const InsightsPage = ({ token }) => {
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
-            className={`pb-4 flex items-center gap-2 text-sm font-bold transition-all border-b-2 ${activeTab === tab.id ? 'border-slate-900 text-slate-900' : 'border-transparent text-slate-400 hover:text-slate-600 hover:border-slate-200'}`}
+            className={`pb-4 flex items-center gap-2 text-sm font-bold transition-all border-b-2 whitespace-nowrap ${activeTab === tab.id ? 'border-slate-900 text-slate-900' : 'border-transparent text-slate-400 hover:text-slate-600 hover:border-slate-200'}`}
           >
             <tab.icon size={16} />
             {tab.label}
@@ -304,7 +325,7 @@ const InsightsPage = ({ token }) => {
                       </defs>
                       <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
                       <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fill: '#94a3b8', fontSize: 12}} dy={10} />
-                      <YAxis axisLine={false} tickLine={false} tick={{fill: '#94a3b8', fontSize: 12}} tickFormatter={(val) => `₹${val}`} />
+                      <YAxis axisLine={false} tickLine={false} tick={{fill: '#94a3b8', fontSize: 12}} tickFormatter={(val) => `₹${val >= 1000 ? (val/1000).toFixed(0)+'k' : val}`} />
                       <Tooltip contentStyle={{borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)'}} formatter={(val) => [`₹${val}`, 'Revenue']} />
                       <Area type="monotone" dataKey="revenue" stroke="#10b981" strokeWidth={4} fillOpacity={1} fill="url(#colorRev)" />
                     </AreaChart>
@@ -352,38 +373,49 @@ const InsightsPage = ({ token }) => {
                  <Card className="p-6">
                     <h3 className="font-bold text-lg text-slate-900 mb-6">Peak Visiting Hours</h3>
                     <div className="h-[300px] w-full">
+                      {analytics.attendance.heatmap.length > 0 ? (
                         <ResponsiveContainer width="100%" height="100%">
-                            <BarChart data={[
-                                { time: '6AM', count: 12 }, { time: '8AM', count: 35 }, { time: '10AM', count: 18 },
-                                { time: '12PM', count: 8 }, { time: '4PM', count: 22 }, { time: '6PM', count: 45 },
-                                { time: '8PM', count: 30 }
-                            ]}>
+                            <BarChart data={analytics.attendance.heatmap}>
                                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
                                 <XAxis dataKey="time" axisLine={false} tickLine={false} tick={{fill: '#94a3b8', fontSize: 12}} />
                                 <Tooltip cursor={{fill: '#f8fafc'}} contentStyle={{borderRadius: '12px', border: 'none'}} />
-                                <Bar dataKey="count" fill="#6366f1" radius={[6, 6, 0, 0]} barSize={40} />
+                                <Bar dataKey="count" fill="#6366f1" radius={[6, 6, 0, 0]} barSize={40} name="Check-ins" />
                             </BarChart>
                         </ResponsiveContainer>
+                      ) : (
+                        <div className="flex items-center justify-center h-full text-slate-400 font-bold">No attendance data yet.</div>
+                      )}
                     </div>
                  </Card>
 
                  <Card className="p-6">
-                    <h3 className="font-bold text-lg text-slate-900 mb-6">Most Consistent Members</h3>
+                    <h3 className="font-bold text-lg text-slate-900 mb-6">Top Active Members (By Lifetime Value)</h3>
                     <div className="space-y-4">
-                        {members.slice(0, 5).map((m, i) => (
-                            <div key={m.id} className="flex items-center justify-between p-3 rounded-xl hover:bg-slate-50 transition-colors">
-                                <div className="flex items-center gap-3">
-                                    <span className="text-slate-300 font-bold text-sm">0{i+1}</span>
-                                    <div className="w-8 h-8 rounded-full bg-slate-200 overflow-hidden">
-                                        <img src={m.profile_pic || 'https://via.placeholder.com/150'} alt="pic" className="w-full h-full object-cover" />
-                                    </div>
-                                    <span className="font-bold text-sm text-slate-700">{m.full_name}</span>
-                                </div>
-                                <div className="flex items-center gap-1 text-xs font-bold text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full border border-emerald-100">
-                                    <Flame size={12} /> {Math.floor(Math.random() * 20) + 10} Day Streak
-                                </div>
-                            </div>
-                        ))}
+                        {analytics.attendance.topMembers.length > 0 ? (
+                          analytics.attendance.topMembers.map((m, i) => (
+                              <div key={m.id} className="flex items-center justify-between p-3 rounded-xl hover:bg-slate-50 transition-colors border border-slate-50">
+                                  <div className="flex items-center gap-3">
+                                      <span className="text-slate-300 font-black text-sm w-4">{i+1}</span>
+                                      <div className="w-9 h-9 rounded-full bg-slate-200 overflow-hidden flex items-center justify-center text-slate-400 font-bold text-xs shrink-0">
+                                          {m.profile_pic ? (
+                                            <img src={m.profile_pic} alt="pic" className="w-full h-full object-cover" />
+                                          ) : (
+                                            m.full_name.charAt(0)
+                                          )}
+                                      </div>
+                                      <div className="flex flex-col min-w-0">
+                                        <span className="font-bold text-sm text-slate-700 truncate">{m.full_name}</span>
+                                        <span className="text-[10px] text-slate-400 font-bold uppercase">₹{parseFloat(m.total_paid).toLocaleString()} Lifetime</span>
+                                      </div>
+                                  </div>
+                                  <div className="flex items-center gap-1 text-[10px] font-black uppercase text-indigo-600 bg-indigo-50 px-2 py-1 rounded-md border border-indigo-100 shrink-0">
+                                      <Award size={12} /> MVP
+                                  </div>
+                              </div>
+                          ))
+                        ) : (
+                          <div className="text-center text-slate-400 font-bold py-10">Add active members to see rankings.</div>
+                        )}
                     </div>
                  </Card>
             </div>
@@ -405,18 +437,16 @@ const InsightsPage = ({ token }) => {
                             <UserMinus size={14} /> At Risk of Churn
                         </div>
                         <h3 className="text-2xl font-black text-amber-900">{analytics.risk.ghostCount} Members</h3>
-                        <p className="text-amber-700/70 text-sm font-medium mt-1">Have not visited the gym in the last 4+ days.</p>
+                        <p className="text-amber-700/70 text-sm font-medium mt-1">Active members who haven't visited in the last 4+ days.</p>
                     </div>
                 </div>
 
-                {/* TWO-COLUMN LAYOUT FOR ACTION TABLES */}
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                    
-                    {/* 1. Critical Members Table (Expired & Expiring) */}
+                    {/* 1. Critical Members Table */}
                     <Card className="p-6">
                         <h3 className="font-bold text-lg text-slate-900 mb-4 flex items-center gap-2">
                             <AlertTriangle size={18} className="text-rose-500" />
-                            Critical Attention (Expired & Expiring)
+                            Critical Attention
                         </h3>
                         <div className="overflow-x-auto">
                             <table className="w-full text-left text-sm">
@@ -509,11 +539,11 @@ const InsightsPage = ({ token }) => {
                 <h3 className="text-xl font-bold text-slate-900">Retention Analytics</h3>
                 <p className="text-slate-400 max-w-sm mt-2 mb-6">Detailed churn prediction and cohort analysis is being calculated based on your historical data.</p>
                 <div className="w-full max-w-2xl bg-slate-100 rounded-full h-3 mb-2 overflow-hidden shadow-inner">
-                    <div className="bg-violet-500 h-full w-[85%] rounded-full shadow-[inset_0_2px_4px_rgba(0,0,0,0.2)]"></div>
+                    <div className="bg-violet-500 h-full rounded-full shadow-[inset_0_2px_4px_rgba(0,0,0,0.2)]" style={{ width: `${analytics.health.retention}%` }}></div>
                 </div>
                 <div className="flex justify-between w-full max-w-2xl text-xs font-bold text-slate-500">
                     <span>Churn Rate: {analytics.health.churn}%</span>
-                    <span>Retention Goal: 90%</span>
+                    <span>Retention: {analytics.health.retention}%</span>
                 </div>
              </Card>
         )}

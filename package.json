@@ -1,8 +1,11 @@
 {
   "name": "gym-management-system",
   "version": "1.0.0",
-  "main": "index.js",
+  "main": "server.js",
   "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js",
+    "dev:all": "node scripts/dev-all.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -12,14 +15,19 @@
   "dependencies": {
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.6",
+    "crypto": "^1.0.1",
     "date-fns": "^4.1.0",
     "dotenv": "^17.2.4",
     "express": "^5.2.1",
+    "express-rate-limit": "^8.3.1",
     "fs": "^0.0.1-security",
+    "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.0.2",
     "nodemon": "^3.1.11",
     "pg": "^8.18.0",
-    "recharts": "^3.7.0"
+    "razorpay": "^2.9.6",
+    "recharts": "^3.7.0",
+    "twilio": "^5.13.0"
   }
 }

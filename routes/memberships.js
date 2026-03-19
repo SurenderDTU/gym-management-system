@@ -1,219 +1,507 @@
 const express = require('express');
 const router = express.Router();
+const Razorpay = require('razorpay');
+const crypto = require('crypto');
 const { pool } = require('../config/db');
 const auth = require('../middleware/authMiddleware');
+const saasMiddleware = require('../middleware/saasMiddleware');
+const { decryptSecret } = require('../utils/secretCrypto');
 
-// 1. ACTIVATION & RENEWAL: Handles member status, membership entry, and payment record
-router.post('/activate', async (req, res) => {
-    const { member_id, plan_id, payment_id, payment_mode } = req.body; // <--- Added payment_mode here
-    const gym_id = (req.user && req.user.gym_id) ? req.user.gym_id : 1; 
+let ensureMemberPaymentsSchemaPromise;
+
+const ensureMemberPaymentsSchema = async () => {
+    if (!ensureMemberPaymentsSchemaPromise) {
+        ensureMemberPaymentsSchemaPromise = pool.query(`
+            ALTER TABLE gyms
+            ADD COLUMN IF NOT EXISTS member_payments_enabled BOOLEAN DEFAULT FALSE,
+            ADD COLUMN IF NOT EXISTS member_razorpay_key_id VARCHAR(120),
+            ADD COLUMN IF NOT EXISTS member_razorpay_key_secret_enc TEXT,
+            ADD COLUMN IF NOT EXISTS member_upi_id VARCHAR(120),
+            ADD COLUMN IF NOT EXISTS member_payments_updated_at TIMESTAMP,
+            ADD COLUMN IF NOT EXISTS member_payments_connect_mode VARCHAR(20) DEFAULT 'MANUAL',
+            ADD COLUMN IF NOT EXISTS member_payments_onboarding_status VARCHAR(30) DEFAULT 'NOT_CONNECTED',
+            ADD COLUMN IF NOT EXISTS member_razorpay_connected_account_id VARCHAR(120),
+            ADD COLUMN IF NOT EXISTS member_payments_connect_meta JSONB DEFAULT '{}'::jsonb,
+            ADD COLUMN IF NOT EXISTS member_payments_connected_at TIMESTAMP;
+        `);
+    }
+    await ensureMemberPaymentsSchemaPromise;
+};
+
+const createSignedState = (payload) => {
+    const encoded = Buffer.from(JSON.stringify(payload)).toString('base64url');
+    const signature = crypto.createHmac('sha256', process.env.JWT_SECRET).update(encoded).digest('hex');
+    return `${encoded}.${signature}`;
+};
+
+const verifySignedState = (stateValue) => {
+    const raw = String(stateValue || '');
+    const [encoded, signature] = raw.split('.');
+    if (!encoded || !signature) return null;
+    const expected = crypto.createHmac('sha256', process.env.JWT_SECRET).update(encoded).digest('hex');
+    if (signature !== expected) return null;
+    try {
+        return JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));
+    } catch (_err) {
+        return null;
+    }
+};
+
+const activateMembershipTransaction = async ({ gymId, memberId, planId, paymentMode, paymentId }) => {
+    const planResult = await pool.query(
+        'SELECT * FROM plans WHERE id = $1 AND gym_id = $2 AND deleted_at IS NULL',
+        [planId, gymId]
+    );
+    if (planResult.rows.length === 0) {
+        return { ok: false, status: 404, error: 'Plan not found' };
+    }
+
+    const memberResult = await pool.query(
+        'SELECT id FROM members WHERE id = $1 AND gym_id = $2 AND deleted_at IS NULL LIMIT 1',
+        [memberId, gymId]
+    );
+    if (memberResult.rows.length === 0) {
+        return { ok: false, status: 404, error: 'Member not found' };
+    }
+
+    const plan = planResult.rows[0];
+    const days = plan.duration_days || (plan.duration_months * 30) || 30;
+    const price = parseFloat(plan.price) || 0;
+
+    const finalMode = paymentMode || (paymentId && String(paymentId).startsWith('pay_') ? 'Online' : 'Cash');
+    const finalTxnId = paymentId || `INV-${Date.now()}`;
+
+    await pool.query('BEGIN');
+    try {
+        await pool.query(
+            "UPDATE memberships SET deleted_at = NOW(), status = 'EXPIRED' WHERE member_id = $1 AND gym_id = $2 AND deleted_at IS NULL",
+            [memberId, gymId]
+        );
+        await pool.query(
+            "UPDATE members SET status = 'ACTIVE', joining_date = COALESCE(joining_date, CURRENT_DATE) WHERE id = $1 AND gym_id = $2",
+            [memberId, gymId]
+        );
+        await pool.query(
+            `INSERT INTO memberships (gym_id, member_id, plan_id, start_date, end_date, status)
+             VALUES ($1, $2, $3, CURRENT_DATE, CURRENT_DATE + ($4 || ' day')::interval, 'ACTIVE')`,
+            [gymId, memberId, planId, days]
+        );
+        await pool.query(
+            `INSERT INTO payments
+             (gym_id, user_id, plan_id, amount_paid, total_amount, payment_date, status, payment_mode, transaction_id, invoice_id)
+             VALUES ($1, $2, $3, $4, $5, NOW(), 'Completed', $6, $7, $8)`,
+            [gymId, memberId, planId, price, price, finalMode, finalTxnId, finalTxnId]
+        );
+        await pool.query('COMMIT');
+    } catch (err) {
+        await pool.query('ROLLBACK');
+        throw err;
+    }
+
+    return {
+        ok: true,
+        data: {
+            message: 'Subscription Activated/Renewed Successfully!',
+            payment_mode: finalMode,
+            transaction_id: finalTxnId,
+            amount: price,
+            plan_name: plan.name,
+        },
+    };
+};
+
+// --- 1. ACTIVATE / RENEW ---
+router.post('/activate', auth, saasMiddleware, async (req, res) => {
+    const { member_id, plan_id, payment_id, payment_mode } = req.body;
+    const gym_id = req.user.gym_id;
+
+    if (!member_id || !plan_id) return res.status(400).json({ error: "member_id and plan_id are required." });
 
     try {
-        const planResult = await pool.query('SELECT * FROM plans WHERE id = $1', [plan_id]);
-        if (planResult.rows.length === 0) return res.status(404).json({ message: "Plan not found" });
-
-        const plan = planResult.rows[0];
-        const days = plan.duration_days || (plan.duration_months * 30) || 30;
-        const price = plan.price || 0;
-
-        // Determine Mode: Use sent mode, or infer from payment_id (if pay_ exists -> Online, else Cash)
-        const final_mode = payment_mode || (payment_id && payment_id.startsWith('pay_') ? 'Online' : 'Cash');
-        
-        // Ensure Transaction ID is never null
-        const final_txn_id = payment_id || `INV-${Date.now()}`;
-
-        await pool.query('BEGIN');
-
-        // A. DELETE any existing memberships for this member first 
-        await pool.query('DELETE FROM memberships WHERE member_id = $1', [member_id]);
-
-        // B. Update member status
-        await pool.query(
-            `UPDATE members 
-             SET status = 'ACTIVE', 
-                 joining_date = COALESCE(joining_date, CURRENT_DATE) 
-             WHERE id = $1`, 
-            [member_id]
-        );
-
-        // C. Insert FRESH Membership record
-        await pool.query(
-            `INSERT INTO memberships (gym_id, member_id, plan_id, start_date, end_date, status) 
-             VALUES ($1, $2, $3, NOW(), NOW() + ($4 || ' day')::interval, 'ACTIVE')`,
-            [gym_id, member_id, plan_id, days]
-        );
-
-        // D. Insert Payment record (Now saving payment_mode and transaction_id correctly)
-        await pool.query(
-            `INSERT INTO payments (
-                gym_id, 
-                user_id, 
-                amount_paid, 
-                payment_date, 
-                status, 
-                plan_id,
-                payment_mode,     -- <--- Added Column
-                transaction_id,   -- <--- Added Column
-                invoice_id        -- <--- Added Column
-            ) 
-            VALUES ($1, $2, $3, NOW(), $4, $5, $6, $7, $8)`,
-            [gym_id, member_id, price, 'Completed', plan_id, final_mode, final_txn_id, final_txn_id]
-        );
-
-        await pool.query('COMMIT');
-        res.json({ message: "Subscription Activated/Renewed Successfully!" });
+        const result = await activateMembershipTransaction({
+            gymId: gym_id,
+            memberId: member_id,
+            planId: plan_id,
+            paymentMode: payment_mode,
+            paymentId: payment_id,
+        });
+        if (!result.ok) return res.status(result.status).json({ error: result.error });
+        res.json(result.data);
 
     } catch (err) {
-        if (pool) await pool.query('ROLLBACK');
         console.error("ACTIVATE ERROR:", err.message);
         res.status(500).json({ error: err.message });
     }
 });
 
-// 2. PLANS MANAGEMENT: Create new plans
-router.post('/plans', auth, async (req, res) => {
-    const { plan_name, duration_days, price } = req.body; 
-    const gym_id = req.user.gym_id || 1;
-
-    // Calculate months automatically
-    const duration_months = Math.max(1, Math.floor(duration_days / 30));
+router.post('/online/create-order', auth, saasMiddleware, async (req, res) => {
+    const gym_id = req.user.gym_id;
+    const { member_id, plan_id } = req.body || {};
+    if (!member_id || !plan_id) return res.status(400).json({ error: 'member_id and plan_id are required.' });
 
     try {
-        const newPlan = await pool.query(
-            'INSERT INTO plans (gym_id, name, duration_days, duration_months, price) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-            [gym_id, plan_name, duration_days, duration_months, price]
+        await ensureMemberPaymentsSchema();
+
+        const gymConfigRes = await pool.query(
+            `SELECT
+                member_payments_enabled,
+                member_razorpay_key_id,
+                member_razorpay_key_secret_enc,
+                member_payments_connect_mode,
+                member_payments_onboarding_status,
+                member_razorpay_connected_account_id
+             FROM gyms WHERE id = $1 LIMIT 1`,
+            [gym_id]
         );
-        res.json(newPlan.rows[0]);
+        const gymConfig = gymConfigRes.rows[0] || {};
+        const keyId = String(gymConfig.member_razorpay_key_id || '').trim();
+        const keySecret = decryptSecret(gymConfig.member_razorpay_key_secret_enc || '');
+        const connectMode = String(gymConfig.member_payments_connect_mode || 'MANUAL').toUpperCase();
+        const connectedAccount = String(gymConfig.member_razorpay_connected_account_id || '').trim();
+
+        if (!gymConfig.member_payments_enabled) {
+            return res.status(400).json({ error: 'Member online payments are disabled in Integrations.' });
+        }
+        if (connectMode === 'PARTNER' && !connectedAccount) {
+            return res.status(400).json({ error: 'Razorpay account is not connected yet. Complete Connect Razorpay onboarding first.' });
+        }
+        if (!keyId || !keySecret) {
+            return res.status(400).json({ error: 'Razorpay member payment gateway is not configured. Please update Integrations.' });
+        }
+
+        const planResult = await pool.query(
+            'SELECT id, name, price FROM plans WHERE id = $1 AND gym_id = $2 AND deleted_at IS NULL LIMIT 1',
+            [plan_id, gym_id]
+        );
+        if (planResult.rows.length === 0) return res.status(404).json({ error: 'Plan not found.' });
+
+        const memberResult = await pool.query(
+            'SELECT id, full_name, email, phone FROM members WHERE id = $1 AND gym_id = $2 AND deleted_at IS NULL LIMIT 1',
+            [member_id, gym_id]
+        );
+        if (memberResult.rows.length === 0) return res.status(404).json({ error: 'Member not found.' });
+
+        const plan = planResult.rows[0];
+        const member = memberResult.rows[0];
+        const amountPaise = Math.round(Number(plan.price || 0) * 100);
+        if (!Number.isFinite(amountPaise) || amountPaise <= 0) {
+            return res.status(400).json({ error: 'Selected plan has invalid price.' });
+        }
+
+        const razorpay = new Razorpay({ key_id: keyId, key_secret: keySecret });
+        const order = await razorpay.orders.create({
+            amount: amountPaise,
+            currency: 'INR',
+            receipt: `gym_${gym_id}_m_${member_id}_${Date.now()}`,
+            notes: {
+                purpose: 'MEMBER_PAYMENT',
+                gym_id: String(gym_id),
+                member_id: String(member_id),
+                plan_id: String(plan_id),
+            },
+        });
+
+        return res.json({
+            key_id: keyId,
+            order,
+            member: {
+                id: member.id,
+                full_name: member.full_name,
+                email: member.email,
+                phone: member.phone,
+            },
+            plan: {
+                id: plan.id,
+                name: plan.name,
+                price: Number(plan.price || 0),
+            },
+        });
     } catch (err) {
-        console.error("PLAN CREATION ERROR:", err.message);
-        res.status(500).json({ message: "Error creating plan." });
+        console.error('MEMBER ONLINE ORDER ERROR:', err.message);
+        return res.status(500).json({ error: 'Failed to initiate online member payment.' });
     }
 });
 
-// 3. FETCH PLANS: FIXED - Removed strict Auth check
-// This ensures the dropdown in your modal ALWAYS shows plans, even if the token is missing.
-router.get('/plans', async (req, res) => {
+router.get('/online/connect-url', auth, saasMiddleware, async (req, res) => {
     try {
-        // Fallback to gym_id = 1 if user isn't logged in perfectly
-        const gym_id = (req.user && req.user.gym_id) ? req.user.gym_id : 1;
+        await ensureMemberPaymentsSchema();
 
-        const plans = await pool.query(
-            'SELECT id, name, duration_days, duration_months, price FROM plans WHERE gym_id = $1', 
+        const gymId = req.user.gym_id;
+        const connectBaseUrl = String(process.env.RAZORPAY_PARTNER_CONNECT_BASE_URL || '').trim();
+        const clientId = String(process.env.RAZORPAY_PARTNER_CLIENT_ID || '').trim();
+        const redirectUri = String(process.env.RAZORPAY_PARTNER_REDIRECT_URI || '').trim();
+
+        if (!connectBaseUrl || !clientId || !redirectUri) {
+            return res.status(400).json({
+                error: 'Partner connect is not configured on server. Set RAZORPAY_PARTNER_CONNECT_BASE_URL, RAZORPAY_PARTNER_CLIENT_ID, and RAZORPAY_PARTNER_REDIRECT_URI.',
+            });
+        }
+
+        const state = createSignedState({
+            gym_id: gymId,
+            user_id: req.user.id,
+            issued_at: Date.now(),
+        });
+
+        const url = new URL(connectBaseUrl);
+        url.searchParams.set('client_id', clientId);
+        url.searchParams.set('redirect_uri', redirectUri);
+        url.searchParams.set('response_type', 'code');
+        url.searchParams.set('scope', 'read_write');
+        url.searchParams.set('state', state);
+
+        return res.json({ connect_url: url.toString() });
+    } catch (err) {
+        console.error('MEMBER PAY CONNECT URL ERROR:', err.message);
+        return res.status(500).json({ error: 'Failed to prepare Razorpay connect URL.' });
+    }
+});
+
+router.get('/online/connect/callback', async (req, res) => {
+    try {
+        await ensureMemberPaymentsSchema();
+
+        const payload = verifySignedState(req.query.state);
+        if (!payload?.gym_id) {
+            return res.status(400).send('<h3>Invalid onboarding state.</h3>');
+        }
+
+        const gymId = Number(payload.gym_id);
+        const code = String(req.query.code || '').trim();
+        const accountId = String(req.query.account_id || req.query.merchant_id || '').trim();
+        const error = String(req.query.error || '').trim();
+
+        let onboardingStatus = 'PENDING';
+        if (error) onboardingStatus = 'FAILED';
+        else if (accountId) onboardingStatus = 'CONNECTED';
+        else if (code) onboardingStatus = 'AUTHORIZED';
+
+        await pool.query(
+            `UPDATE gyms
+             SET member_payments_connect_mode = 'PARTNER',
+                 member_payments_onboarding_status = $1,
+                 member_razorpay_connected_account_id = COALESCE(NULLIF($2, ''), member_razorpay_connected_account_id),
+                 member_payments_connect_meta = $3::jsonb,
+                 member_payments_connected_at = CASE WHEN $1 = 'CONNECTED' THEN NOW() ELSE member_payments_connected_at END,
+                 member_payments_updated_at = NOW()
+             WHERE id = $4`,
+            [onboardingStatus, accountId, JSON.stringify(req.query || {}), gymId]
+        );
+
+        return res.send(`<!doctype html><html><body style="font-family:Arial,sans-serif;padding:24px;">
+            <h3>${onboardingStatus === 'CONNECTED' ? 'Razorpay connected successfully.' : 'Razorpay onboarding updated.'}</h3>
+            <p>You can close this window and return to GymVault Integrations.</p>
+            <script>if(window.opener){window.opener.postMessage({type:'GYMVAULT_RAZORPAY_CONNECT',status:'${onboardingStatus}'},'*');}setTimeout(function(){window.close();},1200);</script>
+        </body></html>`);
+    } catch (err) {
+        console.error('MEMBER PAY CONNECT CALLBACK ERROR:', err.message);
+        return res.status(500).send('<h3>Failed to process onboarding callback.</h3>');
+    }
+});
+
+router.post('/online/connect/disconnect', auth, saasMiddleware, async (req, res) => {
+    try {
+        await ensureMemberPaymentsSchema();
+        await pool.query(
+            `UPDATE gyms
+             SET member_payments_enabled = FALSE,
+                 member_payments_connect_mode = 'MANUAL',
+                 member_payments_onboarding_status = 'NOT_CONNECTED',
+                 member_razorpay_connected_account_id = NULL,
+                 member_payments_connect_meta = '{}'::jsonb,
+                 member_payments_connected_at = NULL,
+                 member_payments_updated_at = NOW()
+             WHERE id = $1`,
+            [req.user.gym_id]
+        );
+        return res.json({ message: 'Razorpay connection removed.' });
+    } catch (err) {
+        console.error('MEMBER PAY DISCONNECT ERROR:', err.message);
+        return res.status(500).json({ error: 'Failed to disconnect Razorpay account.' });
+    }
+});
+
+router.post('/online/verify', auth, saasMiddleware, async (req, res) => {
+    const gym_id = req.user.gym_id;
+    const {
+        member_id,
+        plan_id,
+        razorpay_order_id,
+        razorpay_payment_id,
+        razorpay_signature,
+    } = req.body || {};
+
+    if (!member_id || !plan_id || !razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+        return res.status(400).json({ error: 'Missing payment verification details.' });
+    }
+
+    try {
+        await ensureMemberPaymentsSchema();
+        const gymConfigRes = await pool.query(
+            `SELECT member_razorpay_key_secret_enc
+             FROM gyms WHERE id = $1 LIMIT 1`,
             [gym_id]
+        );
+        const keySecret = decryptSecret(gymConfigRes.rows[0]?.member_razorpay_key_secret_enc || '');
+        if (!keySecret) {
+            return res.status(400).json({ error: 'Razorpay gateway secret missing. Update Integrations first.' });
+        }
+
+        const sign = `${razorpay_order_id}|${razorpay_payment_id}`;
+        const expectedSign = crypto.createHmac('sha256', keySecret).update(sign).digest('hex');
+        if (expectedSign !== razorpay_signature) {
+            return res.status(400).json({ error: 'Invalid payment signature.' });
+        }
+
+        const result = await activateMembershipTransaction({
+            gymId: gym_id,
+            memberId: member_id,
+            planId: plan_id,
+            paymentMode: 'Online',
+            paymentId: razorpay_payment_id,
+        });
+        if (!result.ok) return res.status(result.status).json({ error: result.error });
+        return res.json({ ...result.data, verified: true, razorpay_order_id });
+    } catch (err) {
+        console.error('MEMBER ONLINE VERIFY ERROR:', err.message);
+        return res.status(500).json({ error: 'Failed to verify online member payment.' });
+    }
+});
+
+// --- 2. GET ALL PLANS ---
+router.get('/plans', auth, saasMiddleware, async (req, res) => {
+    try {
+        const plans = await pool.query(
+            `SELECT id, name, duration_days, duration_months, price
+             FROM plans WHERE gym_id = $1 AND deleted_at IS NULL ORDER BY price ASC`,
+            [req.user.gym_id]
         );
         res.json(plans.rows);
     } catch (err) {
         console.error("FETCH PLANS ERROR:", err.message);
-        res.status(500).send("Server Error");
+        res.status(500).json({ error: "Server Error" });
     }
 });
 
-// 4. REMOVE PLAN: FIXED - Removed strict Gym ID check
-// This ensures the "Remove Plan" button works even if the gym_id in the DB is different.
-router.post('/remove-plan', async (req, res) => {
-    const { member_id } = req.body;
+// --- 3. CREATE PLAN ---
+router.post('/plans', auth, saasMiddleware, async (req, res) => {
+    const { plan_name, duration_days, price } = req.body;
+    const gym_id = req.user.gym_id;
+    const duration_months = Math.max(1, Math.floor(parseInt(duration_days) / 30));
 
     try {
+        const newPlan = await pool.query(
+            `INSERT INTO plans (gym_id, name, duration_days, duration_months, price)
+             VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+            [gym_id, plan_name, parseInt(duration_days), duration_months, parseFloat(price)]
+        );
+        res.json(newPlan.rows[0]);
+    } catch (err) {
+        console.error("PLAN CREATION ERROR:", err.message);
+        res.status(500).json({ error: "Error creating plan." });
+    }
+});
+
+// --- 4. REMOVE PLAN ---
+router.post('/remove-plan', auth, saasMiddleware, async (req, res) => {
+    const { member_id } = req.body;
+    const gym_id = req.user.gym_id;
+    try {
         await pool.query('BEGIN');
-
-        // 1. Delete the active membership (Removed "AND gym_id = $2" to force delete)
-        await pool.query(
-            "DELETE FROM memberships WHERE member_id = $1",
-            [member_id]
-        );
-
-        // 2. Set member status back to UNPAID (Removed "AND gym_id = $2" to force update)
-        await pool.query(
-            "UPDATE members SET status = 'UNPAID' WHERE id = $1",
-            [member_id]
-        );
-
+        await pool.query('UPDATE memberships SET deleted_at = NOW(), status = \'EXPIRED\' WHERE member_id = $1 AND gym_id = $2 AND deleted_at IS NULL', [member_id, gym_id]);
+        await pool.query("UPDATE members SET status = 'UNPAID' WHERE id = $1 AND gym_id = $2", [member_id, gym_id]);
         await pool.query('COMMIT');
         res.json({ message: "Plan removed and status reset to Unpaid" });
     } catch (err) {
-        if (pool) await pool.query('ROLLBACK');
+        await pool.query('ROLLBACK');
         console.error("REMOVE PLAN ERROR:", err.message);
         res.status(500).json({ error: err.message });
     }
 });
 
-// 5. STATUS CHECK
-router.get('/status', auth, async (req, res) => {
+// --- 5. MEMBERSHIP STATUS LIST ---
+router.get('/status', auth, saasMiddleware, async (req, res) => {
     try {
-        const gym_id = req.user.gym_id || 1;
         const list = await pool.query(`
-            SELECT 
-                ms.*, 
-                m.full_name, 
+            SELECT
+                ms.*,
+                m.full_name,
                 m.joining_date,
-                p.name as plan_name,
-                p.price as plan_price,
-                pay.payment_date as last_payment_date
+                p.name       AS plan_name,
+                p.price      AS plan_price,
+                pay.payment_date AS last_payment_date
             FROM memberships ms
             JOIN members m ON ms.member_id = m.id
-            JOIN plans p ON ms.plan_id = p.id
+            JOIN plans   p ON ms.plan_id   = p.id
             LEFT JOIN (
-                SELECT member_id, MAX(payment_date) as payment_date 
-                FROM payments 
-                WHERE status = 'COMPLETED' 
-                GROUP BY member_id
-            ) pay ON m.id = pay.member_id
-            WHERE ms.gym_id = $1`, 
-            [gym_id]
-        );
+                SELECT user_id, MAX(payment_date) AS payment_date
+                FROM payments
+                WHERE status = 'Completed' AND gym_id = $1
+                GROUP BY user_id
+            ) pay ON m.id = pay.user_id
+                        WHERE ms.gym_id = $1
+                            AND ms.deleted_at IS NULL
+                            AND m.deleted_at IS NULL
+                            AND p.deleted_at IS NULL
+            ORDER BY ms.end_date ASC
+        `, [req.user.gym_id]);
         res.json(list.rows);
     } catch (err) {
         console.error("STATUS FETCH ERROR:", err.message);
-        res.status(500).send("Server Error");
+        res.status(500).json({ error: "Server Error" });
     }
 });
 
-// 6. RENEWAL LOGIC
-router.post('/renew', auth, async (req, res) => {
+// --- 6. RENEW ---
+router.post('/renew', auth, saasMiddleware, async (req, res) => {
     const { membership_id } = req.body;
-    const gym_id = req.user.gym_id || 1;
-
     try {
-        const current = await pool.query(`
-            SELECT ms.*, p.duration_days, p.duration_months 
-            FROM memberships ms
-            JOIN plans p ON ms.plan_id = p.id
-            WHERE ms.id = $1`, 
-            [membership_id] 
-        ); // Removed strict gym_id check here too for safety
-
-        if (current.rows.length === 0) return res.status(404).json({ message: "Membership not found" });
-        
-        const m = current.rows[0];
-        const daysToAdd = m.duration_days || (m.duration_months * 30) || 30;
-
-        await pool.query(
-            `UPDATE memberships 
-             SET end_date = GREATEST(end_date, NOW()) + ($1 || ' day')::interval, 
-                 status = 'ACTIVE' 
-             WHERE id = $2`,
-            [daysToAdd, membership_id]
+        const current = await pool.query(
+            `SELECT ms.*, p.duration_days, p.duration_months
+             FROM memberships ms
+             JOIN plans p ON ms.plan_id = p.id
+             WHERE ms.id = $1 AND ms.gym_id = $2 AND ms.deleted_at IS NULL AND p.deleted_at IS NULL`,
+            [membership_id, req.user.gym_id]
         );
 
+        if (current.rows.length === 0) return res.status(404).json({ message: "Membership not found" });
+        const daysToAdd = current.rows[0].duration_days || (current.rows[0].duration_months * 30) || 30;
+
+        await pool.query(
+            `UPDATE memberships
+             SET end_date = GREATEST(end_date, CURRENT_DATE) + ($1 || ' day')::interval,
+                 status   = 'ACTIVE'
+             WHERE id = $2 AND gym_id = $3 AND deleted_at IS NULL`,
+            [daysToAdd, membership_id, req.user.gym_id]
+        );
         res.json({ message: "Membership Renewed Successfully!" });
     } catch (err) {
         console.error("RENEWAL ERROR:", err.message);
-        res.status(500).send("Server Error: " + err.message);
-    }
-});
-// 7. QUICK EXTEND (Added feature)
-router.post('/extend', async (req, res) => {
-    const { member_id, days } = req.body;
-    try {
-        await pool.query(
-            `UPDATE memberships 
-             SET end_date = end_date + ($1 || ' day')::interval 
-             WHERE member_id = $2`,
-            [days, member_id]
-        );
-        res.json({ message: `Membership extended by ${days} days` });
-    } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
+
+// --- 7. QUICK EXTEND ---
+router.post('/extend', auth, saasMiddleware, async (req, res) => {
+    const { member_id, days } = req.body;
+    if (!member_id || !days) return res.status(400).json({ error: "member_id and days required." });
+
+    try {
+        const result = await pool.query(
+            `UPDATE memberships
+             SET end_date = end_date + ($1 || ' day')::interval,
+                 status   = 'ACTIVE'
+             WHERE member_id = $2 AND gym_id = $3 AND deleted_at IS NULL
+             RETURNING end_date`,
+            [parseInt(days), member_id, req.user.gym_id]
+        );
+
+        if (result.rowCount === 0) return res.status(404).json({ error: "No active membership found for this member." });
+        res.json({ message: `Membership extended by ${days} days`, new_end_date: result.rows[0].end_date });
+    } catch (err) {
+        console.error("EXTEND ERROR:", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 module.exports = router;

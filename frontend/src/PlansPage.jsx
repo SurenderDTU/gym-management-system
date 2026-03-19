@@ -5,7 +5,16 @@ import {
   TrendingUp, Save, BarChart3, Users, PieChart, ArrowUpRight, Percent, Clock 
 } from 'lucide-react';
 
-const PlansPage = ({ token }) => {
+const extractArray = (value, keys = []) => {
+  if (Array.isArray(value)) return value;
+  if (!value || typeof value !== 'object') return [];
+  for (const key of keys) {
+    if (Array.isArray(value[key])) return value[key];
+  }
+  return [];
+};
+
+const PlansPage = ({ token, toast, showConfirm }) => {
   const [plans, setPlans] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -34,10 +43,10 @@ const PlansPage = ({ token }) => {
 
   const fetchPlans = async () => {
     try {
-      const res = await axios.get('http://localhost:5000/api/plans', {
+      const res = await axios.get('/api/plans', {
         headers: { 'x-auth-token': token }
       });
-      setPlans(res.data);
+      setPlans(extractArray(res.data, ['plans', 'rows', 'items']));
       setLoading(false);
     } catch (err) {
       console.error("Error fetching plans:", err);
@@ -54,13 +63,13 @@ const PlansPage = ({ token }) => {
     setShowAnalyticsModal(true);
     setLoadingAnalytics(true);
     try {
-        const res = await axios.get(`http://localhost:5000/api/plans/${planId}/analytics`, {
+        const res = await axios.get(`/api/plans/${planId}/analytics`, {
             headers: { 'x-auth-token': token }
         });
         setAnalyticsData(res.data);
         setLoadingAnalytics(false);
     } catch (err) {
-        alert("Failed to load analytics");
+        toast?.("Failed to load analytics.", "error");
         setShowAnalyticsModal(false);
     }
   };
@@ -122,27 +131,38 @@ const PlansPage = ({ token }) => {
     e.preventDefault();
     try {
       if (isEditing) {
-        await axios.put(`http://localhost:5000/api/plans/${formData.id}`, formData, { headers: { 'x-auth-token': token } });
+        await axios.put(`/api/plans/${formData.id}`, formData, { headers: { 'x-auth-token': token } });
       } else {
-        await axios.post('http://localhost:5000/api/plans/add', formData, { headers: { 'x-auth-token': token } });
+        await axios.post('/api/plans/add', formData, { headers: { 'x-auth-token': token } });
       }
       setShowModal(false);
       fetchPlans();
-    } catch (err) { alert("Error saving plan"); }
+      toast?.(isEditing ? "Plan updated successfully!" : "Plan created successfully!", "success");
+    } catch (err) { toast?.("Error saving plan. Please try again.", "error"); }
   };
 
-  const handleDelete = async (id) => {
-    if (window.confirm("Are you sure?")) {
+  const handleDelete = (id) => {
+    showConfirm?.({
+      title: 'Delete Plan',
+      message: 'This will permanently delete this membership plan. Members already on this plan will not be affected.',
+      confirmLabel: 'Yes, Delete',
+      variant: 'danger',
+      onConfirm: async () => {
         try {
-            await axios.delete(`http://localhost:5000/api/plans/${id}`, { headers: { 'x-auth-token': token } });
-            fetchPlans();
-        } catch (err) { alert("Delete failed"); }
-    }
+          await axios.delete(`/api/plans/${id}`, { headers: { 'x-auth-token': token } });
+          fetchPlans();
+          toast?.("Plan deleted successfully.", "success");
+        } catch (err) { toast?.("Delete failed. Please try again.", "error"); }
+      },
+    });
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 p-8 font-sans relative">
-      
+    <div className="min-h-screen p-2 font-sans relative">
+
+      <div className="bg-white/80 backdrop-blur-sm rounded-[28px] border border-white/70 p-8"
+        style={{ boxShadow: '0 4px 32px rgba(99,102,241,0.06), 0 1px 4px rgba(0,0,0,0.04)' }}>
+
       {/* HEADER */}
       <div className="flex justify-between items-end mb-10">
         <div>
@@ -268,6 +288,8 @@ const PlansPage = ({ token }) => {
             <span className="font-bold text-sm uppercase tracking-widest">Add New Plan</span>
         </button>
       </div>
+
+      </div>{/* end glass card */}
 
       {/* --- ANALYTICS MODAL --- */}
       {showAnalyticsModal && (

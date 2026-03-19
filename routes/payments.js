@@ -1,15 +1,20 @@
 const express = require('express');
 const router = express.Router();
 const { pool } = require('../config/db');
+const auth = require('../middleware/authMiddleware');
+const saasMiddleware = require('../middleware/saasMiddleware');
+const { requireOwner } = require('../middleware/rbac');
+
+router.use(auth, saasMiddleware, requireOwner);
 
 // --- 1. GET ALL PAYMENTS ---
-router.get('/', async (req, res) => {
+router.get('/', auth, saasMiddleware, async (req, res) => {
     try {
         const { search } = req.query;
-        const gym_id = 1;
+        const gym_id = req.user.gym_id;
 
         let query = `
-            SELECT 
+            SELECT
                 p.id,
                 p.user_id,
                 p.invoice_id,
@@ -20,15 +25,18 @@ router.get('/', async (req, res) => {
                 p.payment_date,
                 p.status,
                 p.payment_mode,
-                m.full_name as member_name,
-                m.email as member_email,
+                p.notes,
+                m.full_name  AS member_name,
+                m.email      AS member_email,
                 m.profile_pic,
-                pl.name as plan_name,
+                pl.name      AS plan_name,
                 pl.duration_days
             FROM payments p
-            JOIN members m ON p.user_id = m.id
-            LEFT JOIN plans pl ON p.plan_id = pl.id
+            JOIN    members m  ON p.user_id  = m.id
+            LEFT JOIN plans pl ON p.plan_id  = pl.id
             WHERE p.gym_id = $1
+                            AND p.deleted_at IS NULL
+                            AND m.deleted_at IS NULL
         `;
         const params = [gym_id];
 
@@ -41,174 +49,176 @@ router.get('/', async (req, res) => {
 
         const result = await pool.query(query, params);
         res.json(result.rows);
-
     } catch (err) {
         console.error("GET PAYMENTS ERROR:", err.message);
-        res.status(500).send("Server Error");
+        res.status(500).json({ error: "Server Error" });
     }
 });
 
-// --- 2. RECORD PAYMENT (SELF-CORRECTING LOGIC) ---
-router.post('/record', async (req, res) => {
+// --- 2. RECORD PAYMENT ---
+router.post('/record', auth, saasMiddleware, async (req, res) => {
     const { user_id, plan_id, amount_paid, total_amount, payment_mode, notes, transaction_id } = req.body;
-    const gym_id = 1;
+    const gym_id = req.user.gym_id;
 
     try {
-        const amount_due = parseFloat(total_amount) - parseFloat(amount_paid);
-        const status = amount_due > 0 ? 'Pending' : 'Completed';
-        
-        // 🛠️ BACKEND OVERRULE
-        const auto_inv_id = `INV-${Date.now().toString().slice(-6)}`;
-        
-        // If it's a Razorpay ID (starts with pay_), or if mode is Online, use that ID
-        const final_txn_id = (transaction_id && transaction_id.trim() !== '') ? transaction_id : auto_inv_id;
-        
-        // SYNC: Make Invoice ID match Transaction ID for Online success
+        const amount_due   = parseFloat(total_amount || 0) - parseFloat(amount_paid || 0);
+        const status       = amount_due > 0 ? 'Pending' : 'Completed';
+        const auto_inv_id  = `INV-${Date.now().toString().slice(-6)}`;
+
+        const final_txn_id     = (transaction_id && transaction_id.trim()) ? transaction_id : auto_inv_id;
         const final_invoice_id = (transaction_id && transaction_id.startsWith('pay_')) ? transaction_id : auto_inv_id;
+        const final_mode       = (transaction_id && transaction_id.startsWith('pay_')) ? 'Online' : (payment_mode || 'Cash');
 
-        // FORCE MODE: If it looks online, save it as online
-        const final_mode = (transaction_id && transaction_id.startsWith('pay_')) ? 'Online' : payment_mode;
-
-        await pool.query('BEGIN'); 
+        await pool.query('BEGIN');
 
         const newPayment = await pool.query(
-            `INSERT INTO payments 
-            (gym_id, user_id, plan_id, amount_paid, amount_due, total_amount, payment_mode, status, invoice_id, transaction_id, notes, payment_date) 
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW()) 
-            RETURNING *`,
-            [gym_id, user_id, plan_id, parseFloat(amount_paid), amount_due, parseFloat(total_amount), final_mode, status, final_invoice_id, final_txn_id, notes || '']
+            `INSERT INTO payments
+             (gym_id, user_id, plan_id, amount_paid, amount_due, total_amount,
+              payment_mode, status, invoice_id, transaction_id, notes, payment_date)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
+             RETURNING *`,
+            [
+                gym_id, user_id, plan_id,
+                parseFloat(amount_paid), amount_due, parseFloat(total_amount || amount_paid),
+                final_mode, status, final_invoice_id, final_txn_id, notes || ''
+            ]
         );
 
-        const planResult = await pool.query("SELECT duration_days FROM plans WHERE id = $1", [plan_id]);
-        
+        await pool.query("UPDATE memberships SET deleted_at = NOW(), status = 'EXPIRED' WHERE member_id = $1 AND gym_id = $2 AND deleted_at IS NULL", [user_id, gym_id]);
+
+        const planResult = await pool.query('SELECT duration_days FROM plans WHERE id = $1 AND gym_id = $2 AND deleted_at IS NULL', [plan_id, gym_id]);
         if (planResult.rows.length > 0) {
             const days = planResult.rows[0].duration_days;
-            const startDate = new Date();
-            const endDate = new Date();
-            endDate.setDate(startDate.getDate() + days);
-
             await pool.query(
                 `INSERT INTO memberships (gym_id, member_id, plan_id, start_date, end_date, status)
-                 VALUES ($1, $2, $3, $4, $5, 'ACTIVE')`,
-                [gym_id, user_id, plan_id, startDate, endDate]
+                 VALUES ($1, $2, $3, CURRENT_DATE, CURRENT_DATE + ($4 || ' day')::interval, 'ACTIVE')`,
+                [gym_id, user_id, plan_id, days]
             );
         }
 
-        await pool.query('COMMIT'); 
+        await pool.query(
+            `UPDATE members SET status = 'ACTIVE', joining_date = COALESCE(joining_date, CURRENT_DATE) WHERE id = $1 AND gym_id = $2`,
+            [user_id, gym_id]
+        );
+
+        await pool.query('COMMIT');
         res.json({ msg: "Payment Recorded!", payment: newPayment.rows[0] });
 
     } catch (err) {
-        await pool.query('ROLLBACK'); 
-        console.error("RECORD ERROR:", err.message);
-        res.status(500).send("Server Error");
+        await pool.query('ROLLBACK');
+        console.error("RECORD PAYMENT ERROR:", err.message);
+        res.status(500).json({ error: "Server Error" });
     }
 });
 
 // --- 3. STATS ---
-router.get('/stats', async (req, res) => {
+router.get('/stats', auth, saasMiddleware, async (req, res) => {
     try {
-        const gym_id = 1;
-        const revenue = await pool.query(`SELECT SUM(amount_paid) as total FROM payments WHERE gym_id = $1`, [gym_id]);
-        const today = await pool.query(`SELECT SUM(amount_paid) as today FROM payments WHERE gym_id = $1 AND payment_date::date = CURRENT_DATE`, [gym_id]);
-        const pending = await pool.query(`SELECT SUM(amount_due) as pending FROM payments WHERE gym_id = $1 AND status = 'Pending'`, [gym_id]);
+        const gym_id = req.user.gym_id;
+        const [revenue, today, pending] = await Promise.all([
+            pool.query(`SELECT COALESCE(SUM(amount_paid), 0) AS total   FROM payments WHERE gym_id = $1 AND deleted_at IS NULL`, [gym_id]),
+            pool.query(`SELECT COALESCE(SUM(amount_paid), 0) AS today   FROM payments WHERE gym_id = $1 AND payment_date::date = CURRENT_DATE AND deleted_at IS NULL`, [gym_id]),
+            pool.query(`SELECT COALESCE(SUM(amount_due),  0) AS pending FROM payments WHERE gym_id = $1 AND status = 'Pending' AND deleted_at IS NULL`, [gym_id])
+        ]);
 
         res.json({
-            total_revenue: revenue.rows[0].total || 0,
-            today_revenue: today.rows[0].today || 0,
-            pending_dues: pending.rows[0].pending || 0
+            total_revenue:  parseFloat(revenue.rows[0].total),
+            today_revenue:  parseFloat(today.rows[0].today),
+            pending_dues:   parseFloat(pending.rows[0].pending)
         });
     } catch (err) {
-        res.status(500).send("Server Error");
+        console.error("PAYMENT STATS ERROR:", err.message);
+        res.status(500).json({ error: "Server Error" });
     }
 });
 
-// --- 4. CHART ---
-router.get('/chart', async (req, res) => {
+// --- 4. REVENUE CHART ---
+router.get('/chart', auth, saasMiddleware, async (req, res) => {
     try {
-        const gym_id = 1;
-        const { days } = req.query;
-        const interval = days === '7' ? '7 days' : '30 days';
+        const gym_id = req.user.gym_id;
+        const interval = req.query.days === '7' ? '7 days' : '30 days';
 
         const chartData = await pool.query(`
-            SELECT 
-                TO_CHAR(payment_date, 'YYYY-MM-DD') as date, 
-                SUM(amount_paid) as revenue 
-            FROM payments 
-            WHERE gym_id = $1 AND payment_date > NOW() - INTERVAL '${interval}'
+            SELECT
+                TO_CHAR(payment_date, 'YYYY-MM-DD') AS date,
+                SUM(amount_paid)::INTEGER            AS revenue
+            FROM payments
+            WHERE gym_id = $1
+                            AND deleted_at IS NULL
+              AND payment_date > NOW() - INTERVAL '${interval}'
             GROUP BY TO_CHAR(payment_date, 'YYYY-MM-DD')
             ORDER BY date ASC
         `, [gym_id]);
 
-        const cleanData = chartData.rows.map(row => ({
-            date: row.date,
-            revenue: parseInt(row.revenue) || 0
-        }));
-
-        res.json(cleanData);
+        res.json(chartData.rows.map(r => ({ date: r.date, revenue: r.revenue || 0 })));
     } catch (err) {
-        res.status(500).send("Server Error");
+        console.error("CHART ERROR:", err.message);
+        res.status(500).json({ error: "Server Error" });
     }
 });
 
-// --- 5. HISTORY ---
-router.get('/history/:member_id', async (req, res) => {
+// --- 5. PAYMENT HISTORY FOR A MEMBER ---
+router.get('/history/:member_id', auth, saasMiddleware, async (req, res) => {
     try {
         const { member_id } = req.params;
+        const gym_id = req.user.gym_id;
         if (!member_id || member_id === 'undefined' || member_id === 'null') {
-            return res.json([]); 
+            return res.json([]);
         }
 
         const history = await pool.query(`
-            SELECT 
-                payment_date, 
-                amount_paid, 
-                status, 
-                invoice_id,
-                transaction_id
-            FROM payments 
-            WHERE user_id = $1 
-            ORDER BY payment_date DESC 
-            LIMIT 5
-        `, [member_id]);
-        
+            SELECT
+                p.payment_date,
+                p.amount_paid,
+                p.status,
+                p.invoice_id,
+                p.transaction_id,
+                p.payment_mode,
+                pl.name AS plan_name
+            FROM payments p
+            LEFT JOIN plans pl ON p.plan_id = pl.id
+            WHERE p.user_id = $1 AND p.gym_id = $2
+                            AND p.deleted_at IS NULL
+            ORDER BY p.payment_date DESC
+            LIMIT 10
+        `, [member_id, gym_id]);
+
         res.json(history.rows);
     } catch (err) {
         console.error("HISTORY ERROR:", err.message);
-        res.status(500).send("Server Error");
+        res.status(500).json({ error: "Server Error" });
     }
 });
 
-router.delete('/:id', async (req, res) => {
+// --- 6. DELETE PAYMENT ---
+router.delete('/:id', auth, saasMiddleware, async (req, res) => {
     try {
         const { id } = req.params;
-        const gym_id = 1;
+        const gym_id = req.user.gym_id;
 
-        await pool.query('BEGIN'); // Start transaction
+        await pool.query('BEGIN');
 
-        // A. Get the user_id linked to this payment before deleting it
-        const payInfo = await pool.query('SELECT user_id FROM payments WHERE id = $1 AND gym_id = $2', [id, gym_id]);
-        
+        const payInfo = await pool.query(
+            'SELECT user_id FROM payments WHERE id = $1 AND gym_id = $2 AND deleted_at IS NULL',
+            [id, gym_id]
+        );
+
         if (payInfo.rows.length === 0) {
             await pool.query('ROLLBACK');
             return res.status(404).json({ msg: "Record not found" });
         }
         const member_id = payInfo.rows[0].user_id;
 
-        // B. Delete the specific payment record
-        await pool.query('DELETE FROM payments WHERE id = $1 AND gym_id = $2', [id, gym_id]);
+        await pool.query('UPDATE payments     SET deleted_at = NOW() WHERE id = $1 AND gym_id = $2 AND deleted_at IS NULL', [id, gym_id]);
+        await pool.query('UPDATE memberships  SET deleted_at = NOW(), status = \'EXPIRED\' WHERE member_id = $1 AND gym_id = $2 AND deleted_at IS NULL', [member_id, gym_id]);
+        await pool.query("UPDATE members SET status = 'UNPAID' WHERE id = $1 AND gym_id = $2", [member_id, gym_id]);
 
-        // C. Delete the member's current membership
-        await pool.query('DELETE FROM memberships WHERE member_id = $1', [member_id]);
-
-        // D. Set member status back to UNPAID in members table
-        await pool.query("UPDATE members SET status = 'UNPAID' WHERE id = $1", [member_id]);
-
-        await pool.query('COMMIT'); // Finalize changes
-        res.json({ msg: "Record deleted and membership reset to Unpaid" });
+        await pool.query('COMMIT');
+        res.json({ msg: "Record archived and membership reset to Unpaid" });
     } catch (err) {
         await pool.query('ROLLBACK');
-        console.error("DELETE ERROR:", err.message);
-        res.status(500).send("Server Error");
+        console.error("DELETE PAYMENT ERROR:", err.message);
+        res.status(500).json({ error: "Server Error" });
     }
 });
 
