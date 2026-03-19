@@ -32,11 +32,8 @@ body {
     overflow-x: hidden;
   }
 
-  #root {
-    transform: scale(0.9);
-    transform-origin: top left;
-    width: calc(100% / 0.9);
-    min-height: calc(100vh / 0.9);
+  body {
+    zoom: 0.9;
   }
 
   .h-screen {
