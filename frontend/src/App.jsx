@@ -17,7 +17,7 @@ import {
   X, CheckCircle, AlertTriangle, AlertCircle,
   LayoutDashboard, Users, Layers, CreditCard,
   ClipboardCheck, BarChart3, Settings, LogOut, Dumbbell, Lock, Bell, User, LifeBuoy,
-  Bot, ArrowRight, Target, Sparkles // <-- 🚨 ADDED TOUR ICONS
+  Bot, ArrowRight, Target, Sparkles, Download // <-- 🚨 ADDED TOUR ICONS
 } from 'lucide-react';
 
 // ─── Navigation Config ────────────────────────────────────────────────────────
@@ -194,6 +194,10 @@ function App() {
   });
   const [isSuspended, setIsSuspended] = useState(false); 
   const [settingsTab, setSettingsTab] = useState('account'); 
+  const [deferredInstallPrompt, setDeferredInstallPrompt] = useState(null);
+  const [canInstallApp, setCanInstallApp] = useState(false);
+  const [isIosDevice, setIsIosDevice] = useState(false);
+  const [isStandaloneMode, setIsStandaloneMode] = useState(false);
 
   // 🚨 MASTERCLASS TOUR STATE 🚨
   const [tour, setTour] = useState({ isActive: false, step: 0, isWaitingForAction: false });
@@ -210,6 +214,59 @@ function App() {
   useEffect(() => {
     toastRef.current = toast;
   }, [toast]);
+
+  useEffect(() => {
+    const isIos = /iphone|ipad|ipod/i.test(window.navigator.userAgent || '');
+    const standalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+    setIsIosDevice(isIos);
+    setIsStandaloneMode(standalone);
+
+    const onBeforeInstallPrompt = (event) => {
+      event.preventDefault();
+      setDeferredInstallPrompt(event);
+      setCanInstallApp(true);
+    };
+
+    const onAppInstalled = () => {
+      setCanInstallApp(false);
+      setDeferredInstallPrompt(null);
+      toastRef.current?.('GymVault app installed!', 'success');
+    };
+
+    window.addEventListener('beforeinstallprompt', onBeforeInstallPrompt);
+    window.addEventListener('appinstalled', onAppInstalled);
+
+    if (isIos && !standalone) {
+      setCanInstallApp(true);
+    }
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', onBeforeInstallPrompt);
+      window.removeEventListener('appinstalled', onAppInstalled);
+    };
+  }, []);
+
+  const handleInstallApp = useCallback(async () => {
+    if (isStandaloneMode) return;
+
+    if (deferredInstallPrompt) {
+      deferredInstallPrompt.prompt();
+      const choiceResult = await deferredInstallPrompt.userChoice;
+      if (choiceResult?.outcome !== 'accepted') {
+        toastRef.current?.('Install cancelled.', 'warning');
+      }
+      setDeferredInstallPrompt(null);
+      setCanInstallApp(false);
+      return;
+    }
+
+    if (isIosDevice) {
+      toastRef.current?.('On iPhone/iPad: tap Share, then Add to Home Screen.', 'warning');
+      return;
+    }
+
+    toastRef.current?.('Install prompt is not available yet on this browser.', 'warning');
+  }, [deferredInstallPrompt, isIosDevice, isStandaloneMode]);
 
   const handleLogout = useCallback(() => {
     localStorage.removeItem('token');
@@ -680,6 +737,15 @@ function App() {
               )}
             </div>
             <div className="flex items-center gap-5">
+              {token && !isStandaloneMode && canInstallApp && (
+                <button
+                  onClick={handleInstallApp}
+                  className="md:hidden inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-indigo-50 text-indigo-600 text-[11px] font-black uppercase tracking-wider hover:bg-indigo-100 transition-colors"
+                >
+                  <Download size={13} />
+                  Add to Screen
+                </button>
+              )}
   
               {/* NOTIFICATION BELL */}
               <div className="relative">
