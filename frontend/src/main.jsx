@@ -23,7 +23,9 @@ const unwrapApiData = (payload) => {
   return current
 }
 
-const apiBaseUrl = (import.meta.env.VITE_API_URL || 'http://localhost:5000').trim()
+const configuredApiUrl = String(import.meta.env.VITE_API_URL || '').trim()
+const isLocalHost = typeof window !== 'undefined' && ['localhost', '127.0.0.1'].includes(window.location.hostname)
+const apiBaseUrl = configuredApiUrl || (isLocalHost ? 'http://localhost:5000' : '')
 axios.defaults.baseURL = apiBaseUrl
 
 axios.interceptors.request.use((config) => {

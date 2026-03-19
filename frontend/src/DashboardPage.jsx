@@ -278,6 +278,9 @@ const DashboardPage = ({ token, setCurrentPage, toast, navigateTo: navTo, startT
 
   const asArray = (value) => (Array.isArray(value) ? value : []);
 
+  const normalizePhoneInput = (value) => String(value || '').replace(/\D/g, '').slice(0, 10);
+  const isValidPhoneInput = (value) => /^\d{10}$/.test(normalizePhoneInput(value));
+
   const asObject = (value, fallback = {}) => (
     value && typeof value === 'object' && !Array.isArray(value) ? value : fallback
   );
@@ -361,10 +364,15 @@ const DashboardPage = ({ token, setCurrentPage, toast, navigateTo: navTo, startT
 
   const handleAddMember = async (e) => {
     e.preventDefault();
+    const normalizedPhone = normalizePhoneInput(addFormData.phone);
+    if (!isValidPhoneInput(normalizedPhone)) {
+      toast('Phone must be exactly 10 digits.', 'error');
+      return;
+    }
     const formData = new FormData();
     formData.append('full_name', addFormData.full_name);
     formData.append('email', addFormData.email);
-    formData.append('phone', addFormData.phone);
+    formData.append('phone', normalizedPhone);
     if (addFile) formData.append('profile_pic', addFile);
     try {
       const res = await axios.post('/api/members/add', formData, {
@@ -1406,10 +1414,14 @@ const DashboardPage = ({ token, setCurrentPage, toast, navigateTo: navTo, startT
                   <input
                     type="text"
                     required
+                    inputMode="numeric"
+                    maxLength={10}
+                    pattern="[0-9]{10}"
+                    title="Enter exactly 10 digits"
                     placeholder="9876543210"
                     className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-emerald-300 focus:border-emerald-400 font-semibold text-slate-900 text-sm transition-all"
                     value={addFormData.phone}
-                    onChange={(e) => setAddFormData({ ...addFormData, phone: e.target.value })}
+                    onChange={(e) => setAddFormData({ ...addFormData, phone: normalizePhoneInput(e.target.value) })}
                   />
                 </div>
                 <div>

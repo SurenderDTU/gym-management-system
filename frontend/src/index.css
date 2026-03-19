@@ -1,8 +1,46 @@
 /* No @tailwind rules here - we are using the CDN in index.html instead */
+html {
+  font-size: 16px;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
 body {
   margin: 0;
   padding: 0;
-  box-sizing: border-box;
+  font-family: 'Inter', sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: #f8fafc;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+@media (min-width: 1024px) {
+  body {
+    zoom: 0.9;
+  }
+}
+
+@supports not (zoom: 1) {
+  @media (min-width: 1024px) {
+    #root {
+      transform: scale(0.9);
+      transform-origin: top left;
+      width: calc(100% / 0.9);
+      min-height: calc(100vh / 0.9);
+    }
+  }
 }
 
 @keyframes whatsapp-pop-in {

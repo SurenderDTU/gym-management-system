@@ -69,6 +69,9 @@ const extractArray = (value, keys = []) => {
   return [];
 };
 
+const normalizePhoneInput = (value) => String(value || '').replace(/\D/g, '').slice(0, 10);
+const isValidPhoneInput = (value) => /^\d{10}$/.test(normalizePhoneInput(value));
+
 const loadRazorpayScript = () => {
   return new Promise((resolve) => {
     if (window.Razorpay) return resolve(true);
@@ -310,10 +313,15 @@ const MembersPage = ({ token, toast, showConfirm, defaultFilter = 'All' }) => {
 
   const handleAddMember = async (e) => {
     e.preventDefault();
+    const normalizedPhone = normalizePhoneInput(addFormData.phone);
+    if (!isValidPhoneInput(normalizedPhone)) {
+      toast?.('Phone must be exactly 10 digits.', 'error');
+      return;
+    }
     const formData = new FormData();
     formData.append('full_name', addFormData.full_name);
     formData.append('email', addFormData.email);
-    formData.append('phone', addFormData.phone);
+    formData.append('phone', normalizedPhone);
     if (addFile) formData.append('profile_pic', addFile);
     try {
       const res = await axios.post('/api/members/add', formData, { headers: { 'x-auth-token': token, 'Content-Type': 'multipart/form-data' } });
@@ -334,8 +342,13 @@ const MembersPage = ({ token, toast, showConfirm, defaultFilter = 'All' }) => {
 
   const handleUpdateMember = async (e) => {
     e.preventDefault();
+    const normalizedPhone = normalizePhoneInput(editFormData.phone);
+    if (!isValidPhoneInput(normalizedPhone)) {
+      toast?.('Phone must be exactly 10 digits.', 'error');
+      return;
+    }
     const formData = new FormData();
-    formData.append('full_name', editFormData.full_name); formData.append('email', editFormData.email); formData.append('phone', editFormData.phone);
+    formData.append('full_name', editFormData.full_name); formData.append('email', editFormData.email); formData.append('phone', normalizedPhone);
     if (editFile) formData.append('profile_pic', editFile);
     try {
       await axios.put(`/api/members/${editFormData.id}`, formData, { headers: { 'x-auth-token': token, 'Content-Type': 'multipart/form-data' } });
@@ -637,7 +650,7 @@ const MembersPage = ({ token, toast, showConfirm, defaultFilter = 'All' }) => {
               <div className="space-y-4">
                 <div><label className="block text-[10px] font-bold text-slate-400 uppercase mb-1.5 ml-0.5">Full Name</label><input type="text" required className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 text-slate-900 font-semibold text-sm transition-all" value={editFormData.full_name} onChange={(e) => setEditFormData({ ...editFormData, full_name: e.target.value })} /></div>
                 <div className="grid grid-cols-2 gap-3">
-                  <div><label className="block text-[10px] font-bold text-slate-400 uppercase mb-1.5 ml-0.5">Phone</label><input type="text" required className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 text-slate-900 font-semibold text-sm transition-all" value={editFormData.phone} onChange={(e) => setEditFormData({ ...editFormData, phone: e.target.value })} /></div>
+                  <div><label className="block text-[10px] font-bold text-slate-400 uppercase mb-1.5 ml-0.5">Phone</label><input type="text" required inputMode="numeric" maxLength={10} pattern="[0-9]{10}" title="Enter exactly 10 digits" className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 text-slate-900 font-semibold text-sm transition-all" value={editFormData.phone} onChange={(e) => setEditFormData({ ...editFormData, phone: normalizePhoneInput(e.target.value) })} /></div>
                   <div><label className="block text-[10px] font-bold text-slate-400 uppercase mb-1.5 ml-0.5">Email</label><input type="email" required className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 text-slate-900 font-semibold text-sm transition-all" value={editFormData.email} onChange={(e) => setEditFormData({ ...editFormData, email: e.target.value })} /></div>
                 </div>
               </div>
@@ -660,7 +673,7 @@ const MembersPage = ({ token, toast, showConfirm, defaultFilter = 'All' }) => {
               <div className="flex flex-col items-center"><label className="cursor-pointer block"><div className="w-24 h-24 rounded-full overflow-hidden border-2 border-dashed border-slate-200 bg-slate-50 flex items-center justify-center hover:border-emerald-400 hover:bg-emerald-50/30 transition-all">{previewUrl ? <img src={previewUrl} alt="Preview" className="w-full h-full object-cover" /> : <div className="flex flex-col items-center gap-1 text-slate-300"><UserPlus size={28} /><span className="text-[9px] font-bold uppercase tracking-wider">Upload</span></div>}</div><input type="file" accept="image/*" className="hidden" onChange={(e) => { setAddFile(e.target.files[0]); setPreviewUrl(URL.createObjectURL(e.target.files[0])); }} /></label><p className="text-[10px] text-slate-400 font-medium mt-2">Click to upload photo (optional)</p></div>
               <div><label className="block text-[10px] font-bold text-slate-400 uppercase mb-1.5 ml-0.5">Full Name *</label><input type="text" required placeholder="e.g. Rahul Sharma" className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-emerald-300 focus:border-emerald-400 font-semibold text-slate-900 text-sm transition-all" value={addFormData.full_name} onChange={(e) => setAddFormData({ ...addFormData, full_name: e.target.value })} /></div>
               <div className="grid grid-cols-2 gap-3">
-                <div><label className="block text-[10px] font-bold text-slate-400 uppercase mb-1.5 ml-0.5">Phone *</label><input type="text" required placeholder="9876543210" className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-emerald-300 focus:border-emerald-400 font-semibold text-slate-900 text-sm transition-all" value={addFormData.phone} onChange={(e) => setAddFormData({ ...addFormData, phone: e.target.value })} /></div>
+                <div><label className="block text-[10px] font-bold text-slate-400 uppercase mb-1.5 ml-0.5">Phone *</label><input type="text" required inputMode="numeric" maxLength={10} pattern="[0-9]{10}" title="Enter exactly 10 digits" placeholder="9876543210" className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-emerald-300 focus:border-emerald-400 font-semibold text-slate-900 text-sm transition-all" value={addFormData.phone} onChange={(e) => setAddFormData({ ...addFormData, phone: normalizePhoneInput(e.target.value) })} /></div>
                 <div><label className="block text-[10px] font-bold text-slate-400 uppercase mb-1.5 ml-0.5">Email *</label><input type="email" required placeholder="rahul@email.com" className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-emerald-300 focus:border-emerald-400 font-semibold text-slate-900 text-sm transition-all" value={addFormData.email} onChange={(e) => setAddFormData({ ...addFormData, email: e.target.value })} /></div>
               </div>
               <div>
