@@ -27,19 +27,16 @@ body {
 }
 
 @media (min-width: 1024px) {
+  html,
   body {
-    zoom: 0.9;
+    overflow-x: hidden;
   }
-}
 
-@supports not (zoom: 1) {
-  @media (min-width: 1024px) {
-    #root {
-      transform: scale(0.9);
-      transform-origin: top left;
-      width: calc(100% / 0.9);
-      min-height: calc(100vh / 0.9);
-    }
+  #root {
+    transform: scale(0.9);
+    transform-origin: top left;
+    width: calc(100% / 0.9);
+    min-height: calc(100vh / 0.9);
   }
 }
 
