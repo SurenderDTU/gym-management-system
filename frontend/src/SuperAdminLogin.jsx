@@ -15,7 +15,12 @@ function SuperAdminLogin({ setSuperToken }) {
       const res = await axios.post('/api/superadmin/login', { password });
       setSuperToken(res.data.token);
     } catch (err) {
-      setError(err.response?.data?.message || "Access Denied.");
+      const status = err?.response?.status;
+      if (status === 401) {
+        setError('Wrong HQ password. Please try again.');
+      } else {
+        setError(err.response?.data?.message || 'HQ access is unavailable right now.');
+      }
     } finally {
       setLoading(false);
     }
@@ -82,6 +87,10 @@ function SuperAdminLogin({ setSuperToken }) {
               Local dev hint: if no MASTER_PASSWORD is set, use <span className="text-rose-400">admin123</span>.
             </p>
           )}
+
+          <p className="text-center text-[11px] font-semibold text-slate-500">
+            Forgot HQ password? Set a new <span className="text-rose-400">MASTER_PASSWORD</span> in Render env and redeploy.
+          </p>
         </form>
       </div>
     </div>

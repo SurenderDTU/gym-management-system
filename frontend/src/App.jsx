@@ -307,6 +307,7 @@ function App() {
   const availableNavItems = NAV_ITEMS.filter((item) => canAccessPage(item.name));
 
   useEffect(() => {
+    if (isHQ) return;
     if (!token) return;
     axios.get('/api/auth/me', { headers: { 'x-auth-token': token } })
       .then((res) => {
@@ -319,15 +320,16 @@ function App() {
       .catch(() => {
         if (!currentUser) handleLogout();
       });
-  }, [token]);
+  }, [token, isHQ]);
 
   useEffect(() => {
+    if (isHQ) return;
     if (!token) return;
     if (canAccessPage(currentPage)) return;
 
     const firstAllowed = availableNavItems[0]?.name || 'Help & Support';
     setCurrentPage(firstAllowed);
-  }, [currentPage, availableNavItems, canAccessPage, token]);
+  }, [currentPage, availableNavItems, canAccessPage, token, isHQ]);
 
   // --- NOTIFICATION STATE & LOGIC ---
   const [notifications, setNotifications] = useState([]);
@@ -436,11 +438,12 @@ function App() {
   }, [isHQ]);
 
   useEffect(() => {
+    if (isHQ) return;
     if (token && window.location.pathname === '/login') {
       window.history.pushState({}, '', '/dashboard');
       setCurrentPage('Dashboard');
     }
-  }, [token]);
+  }, [token, isHQ]);
 
   const fetchDashboard = async () => {
     if (!token || isHQ || isSuspended || currentUser?.role !== 'OWNER') return;

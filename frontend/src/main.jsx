@@ -43,10 +43,12 @@ axios.interceptors.response.use((response) => {
 }, (error) => {
   const status = error?.response?.status
   const code = error?.response?.data?.code
+  const requestUrl = String(error?.config?.url || '')
   const reqHeaders = error?.config?.headers || {}
   const isSuperadminReq = Boolean(reqHeaders['x-super-token'])
+  const isSuperadminUrl = requestUrl.includes('/api/superadmin')
 
-  if (status === 401 && (code === 'AUTH_INVALID' || code === 'AUTH_MISSING' || !isSuperadminReq)) {
+  if (status === 401 && !isSuperadminReq && !isSuperadminUrl && (code === 'AUTH_INVALID' || code === 'AUTH_MISSING')) {
     localStorage.removeItem('token')
     window.dispatchEvent(new CustomEvent('gymvault:auth-invalid', {
       detail: {
