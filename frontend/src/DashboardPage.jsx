@@ -941,7 +941,7 @@ const DashboardPage = ({ token, setCurrentPage, toast, navigateTo: navTo, startT
   if (loading) return <DashboardSkeleton />;
 
   return (
-    <div className="min-h-full pb-28 font-inter relative">
+    <div className="min-h-full pb-24 sm:pb-28 font-inter relative">
       {animationStyles}
 
       {/* ════════════════════════════════════════
@@ -984,7 +984,7 @@ const DashboardPage = ({ token, setCurrentPage, toast, navigateTo: navTo, startT
       ════════════════════════════════════════ */}
       <div
         id="tour-dashboard-hero"
-        className="relative overflow-hidden rounded-[28px] p-7 md:p-8 mb-6"
+        className="relative overflow-hidden rounded-[24px] sm:rounded-[28px] p-5 sm:p-6 md:p-8 mb-5 sm:mb-6"
         style={{
           background: 'linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%)',
           boxShadow: '0 20px 60px rgba(48,43,99,0.25), 0 1px 0 rgba(255,255,255,0.05) inset',
@@ -1008,7 +1008,7 @@ const DashboardPage = ({ token, setCurrentPage, toast, navigateTo: navTo, startT
               <span className="w-2 h-2 bg-emerald-400 rounded-full inline-block" style={{ animation: 'heroPulse 2s ease-in-out infinite' }} />
               <span className="text-emerald-400/80 text-[10px] font-black uppercase tracking-[0.22em]">Live Dashboard</span>
             </div>
-            <h1 className="text-4xl md:text-[2.75rem] font-black text-white tracking-tight leading-none mb-2">
+            <h1 className="text-2xl sm:text-3xl md:text-[2.75rem] font-black text-white tracking-tight leading-none mb-2">
               {getGreeting()} 👋
             </h1>
             <p className="text-white/35 font-semibold text-sm">
@@ -1035,7 +1035,7 @@ const DashboardPage = ({ token, setCurrentPage, toast, navigateTo: navTo, startT
       </div>
 
       <div className="flex flex-col gap-5">
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
           <KPICard
             title="Active Members" value={dashboardData.active}
             icon={Users} index={0}
@@ -1267,7 +1267,7 @@ const DashboardPage = ({ token, setCurrentPage, toast, navigateTo: navTo, startT
           </div>
         </div>
 
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
           <KPICard
             title="Check-ins Today" value={todayCheckins}
             icon={CheckCircle} index={8}

@@ -177,7 +177,9 @@ function SplashScreen({ exiting }) {
 // ─── Main App ─────────────────────────────────────────────────────────────────
 
 function App() {
-  const isHQ = window.location.pathname === '/hq-admin';
+  const pathname = String(window.location.pathname || '/');
+  const normalizedPathname = pathname.replace(/\/+$/, '') || '/';
+  const isHQ = normalizedPathname === '/hq-admin' || normalizedPathname.startsWith('/hq-admin/');
   const [superToken, setSuperToken] = useState(localStorage.getItem('superToken'));
   
   const [currentPage, setCurrentPage] = useState('Dashboard');
@@ -379,12 +381,18 @@ function App() {
     const interceptor = axios.interceptors.response.use(
       (response) => response,
       (error) => {
+        const requestUrl = String(error?.config?.url || '');
+        const isSuperadminRequest = requestUrl.includes('/api/superadmin');
+
         if (error.response && error.response.data.error === "SAAS_EXPIRED") {
           setIsSuspended(true); 
           setCurrentPage('Settings'); 
           return new Promise(() => {}); 
         }
         if (error.response && error.response.status === 401) {
+          if (isSuperadminRequest) {
+            return Promise.reject(error);
+          }
           const authMsg = error.response?.data?.error || error.response?.data?.message || 'Session expired. Please login again.';
           toastRef.current?.(authMsg, 'error');
           handleLogout();

@@ -384,7 +384,7 @@ const MembersPage = ({ token, toast, showConfirm, defaultFilter = 'All' }) => {
   const counts = { All: members.length, Active: members.filter((m) => ['ACTIVE', 'EXPIRING SOON'].includes(getStatusInfo(m).label)).length, Expired: members.filter((m) => getStatusInfo(m).label === 'EXPIRED').length, 'Expiring Soon': members.filter((m) => getStatusInfo(m).label === 'EXPIRING SOON').length, Inactive: members.filter((m) => getStatusInfo(m).label === 'INACTIVE').length, Unpaid: members.filter((m) => getStatusInfo(m).label === 'UNPAID').length };
 
   return (
-    <div className="flex flex-col gap-5 p-2 min-h-full relative">
+    <div className="flex flex-col gap-4 sm:gap-5 p-1 sm:p-2 min-h-full relative">
       {showSuccessAnim && (
         <div className="fixed inset-0 z-[200] flex items-center justify-center bg-slate-900/80 backdrop-blur-md animate-in fade-in duration-300">
           <div className="bg-white p-10 rounded-[40px] shadow-2xl text-center flex flex-col items-center animate-in zoom-in-95 duration-500 max-w-sm w-full">
@@ -409,14 +409,14 @@ const MembersPage = ({ token, toast, showConfirm, defaultFilter = 'All' }) => {
       </div>
 
       <div className="bg-white/80 backdrop-blur-sm rounded-[28px] border border-white/70 p-6 flex flex-col gap-5" style={{ boxShadow: '0 4px 32px rgba(99,102,241,0.06), 0 1px 4px rgba(0,0,0,0.04)' }}>
-        <div className="flex justify-between items-center">
+        <div className="flex flex-col md:flex-row justify-between md:items-center gap-3">
           <div>
             <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2">Members {isBulkMode && (<span className="text-xs bg-slate-900 text-white px-2.5 py-1 rounded-full font-black">{selectedIds.length} selected</span>)}</h1>
             <p className="text-slate-500 text-sm mt-0.5">Manage and track your gym members</p>
           </div>
-          <div className="flex gap-2.5">
-            <button onClick={() => { setIsBulkMode(!isBulkMode); setSelectedIds([]); }} className={`px-4 py-2.5 rounded-xl font-semibold flex items-center gap-2 border text-sm transition-all ${isBulkMode ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}><ListChecks size={16} /> {isBulkMode ? 'Exit' : 'Bulk Select'}</button>
-            <button onClick={() => setShowAddModal(true)} className="text-white px-5 py-2.5 rounded-xl font-bold flex items-center gap-2 transition-all hover:opacity-90 active:scale-95 text-sm" style={{ background: 'linear-gradient(135deg, #6366f1, #a855f7)', boxShadow: '0 4px 16px rgba(99,102,241,0.35)' }}><Plus size={16} /> Add Member</button>
+          <div className="flex gap-2.5 w-full md:w-auto">
+            <button onClick={() => { setIsBulkMode(!isBulkMode); setSelectedIds([]); }} className={`flex-1 md:flex-none px-4 py-2.5 rounded-xl font-semibold flex items-center justify-center gap-2 border text-sm transition-all ${isBulkMode ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}><ListChecks size={16} /> {isBulkMode ? 'Exit' : 'Bulk Select'}</button>
+            <button onClick={() => setShowAddModal(true)} className="flex-1 md:flex-none text-white px-5 py-2.5 rounded-xl font-bold flex items-center justify-center gap-2 transition-all hover:opacity-90 active:scale-95 text-sm" style={{ background: 'linear-gradient(135deg, #6366f1, #a855f7)', boxShadow: '0 4px 16px rgba(99,102,241,0.35)' }}><Plus size={16} /> Add Member</button>
           </div>
         </div>
 
