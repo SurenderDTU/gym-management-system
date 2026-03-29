@@ -15,6 +15,9 @@ function SuperAdminLogin({ setSuperToken }) {
       const res = await axios.post('/api/superadmin/login', { password });
       setSuperToken(res.data.token);
     } catch (err) {
+      if (window.location.pathname !== '/hq-admin') {
+        window.history.replaceState({}, '', '/hq-admin');
+      }
       const status = err?.response?.status;
       if (status === 401) {
         setError('Wrong HQ password. Please try again.');

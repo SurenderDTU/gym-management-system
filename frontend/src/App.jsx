@@ -392,7 +392,7 @@ function App() {
           return new Promise(() => {}); 
         }
         if (error.response && error.response.status === 401) {
-          if (isSuperadminRequest) {
+          if (isHQ || isSuperadminRequest) {
             return Promise.reject(error);
           }
           const authMsg = error.response?.data?.error || error.response?.data?.message || 'Session expired. Please login again.';
@@ -403,7 +403,7 @@ function App() {
       }
     );
     return () => axios.interceptors.response.eject(interceptor);
-  }, [handleLogout]);
+  }, [handleLogout, isHQ]);
 
   // 🚨 NAVIGATION
   const handleSidebarNav = useCallback((page) => {
