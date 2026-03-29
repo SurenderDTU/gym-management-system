@@ -12,10 +12,17 @@ if (!process.env.JWT_SECRET || process.env.JWT_SECRET === 'secret' || process.en
 // POST /api/auth/register-owner
 // Creates a new gym + owner account securely. Includes Self-Healing for deleted HQ accounts.
 router.post('/register-owner', async (req, res) => {
-    const { gym_name, full_name, email, password } = req.body;
+    const gym_name = String(req.body?.gym_name || '').trim();
+    const full_name = String(req.body?.full_name || '').trim();
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    const password = String(req.body?.password || '');
 
     if (!gym_name || !full_name || !email || !password) {
         return res.status(400).json({ message: "All fields are required." });
+    }
+
+    if (password.length < 8) {
+        return res.status(400).json({ message: "Password must be at least 8 characters." });
     }
 
     try {
@@ -76,7 +83,8 @@ router.post('/register-owner', async (req, res) => {
 // POST /api/auth/login
 // SECURE MODE: Authenticates using strict email checks and bcrypt password verification.
 router.post('/login', async (req, res) => {
-    const { email, password } = req.body;
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    const password = String(req.body?.password || '');
 
     if (!email || !password) {
         return res.status(400).json({ message: "Email and password are required." });

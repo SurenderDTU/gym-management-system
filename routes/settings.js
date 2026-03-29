@@ -520,7 +520,7 @@ router.post('/integrations/test-message', auth, async (req, res) => {
     } catch (err) {
         console.error('TEST MESSAGE ERROR:', err.message);
         return res.status(500).json({
-            error: err?.message?.includes('Twilio') ? err.message : 'Failed to send test message.',
+            error: 'Failed to send test message.',
         });
     }
 });
@@ -531,6 +531,21 @@ router.put('/account', auth, upload.single('profile_pic'), async (req, res) => {
     let profile_pic_path = req.file ? `/uploads/profiles/${req.file.filename}` : null;
 
     try {
+        const normalizedCurrentPassword = String(current_password || '').trim();
+        const normalizedNewPassword = String(new_password || '');
+
+        if ((normalizedCurrentPassword && !normalizedNewPassword) || (!normalizedCurrentPassword && normalizedNewPassword)) {
+            return res.status(400).json({ error: 'To change password, provide both current_password and new_password.' });
+        }
+
+        if (normalizedNewPassword && normalizedNewPassword.length < 8) {
+            return res.status(400).json({ error: 'New password must be at least 8 characters.' });
+        }
+
+        if (normalizedCurrentPassword && normalizedNewPassword && normalizedCurrentPassword === normalizedNewPassword) {
+            return res.status(400).json({ error: 'New password must be different from current password.' });
+        }
+
         await pool.query('BEGIN');
 
         if (profile_pic_path) {
@@ -545,9 +560,9 @@ router.put('/account', auth, upload.single('profile_pic'), async (req, res) => {
             );
         }
 
-        if (current_password && new_password) {
+        if (normalizedCurrentPassword && normalizedNewPassword) {
             const userRes = await pool.query('SELECT password_hash FROM users WHERE id = $1', [req.user.id]);
-            const isMatch = await bcrypt.compare(current_password, userRes.rows[0].password_hash);
+            const isMatch = await bcrypt.compare(normalizedCurrentPassword, userRes.rows[0].password_hash);
             
             if (!isMatch) {
                 await pool.query('ROLLBACK');
@@ -555,7 +570,7 @@ router.put('/account', auth, upload.single('profile_pic'), async (req, res) => {
             }
 
             const salt = await bcrypt.genSalt(10);
-            const hashedNewPassword = await bcrypt.hash(new_password, salt);
+            const hashedNewPassword = await bcrypt.hash(normalizedNewPassword, salt);
 
             await pool.query(
                 'UPDATE users SET password_hash = $1 WHERE id = $2',
@@ -633,7 +648,30 @@ router.put('/preferences', auth, async (req, res) => {
 
 // --- 6. DANGER ZONE ---
 router.delete('/nuke', auth, async (req, res) => {
+    const currentPassword = String(req.body?.current_password || '');
+
+    if (!currentPassword) {
+        return res.status(400).json({ error: 'current_password is required to delete gym data.' });
+    }
+
     try {
+        const ownerResult = await pool.query(
+            `SELECT password_hash
+             FROM users
+             WHERE id = $1 AND gym_id = $2 AND UPPER(role) = 'OWNER'
+             LIMIT 1`,
+            [req.user.id, req.user.gym_id]
+        );
+
+        if (ownerResult.rows.length === 0) {
+            return res.status(403).json({ error: 'Only gym owner can perform this action.' });
+        }
+
+        const isMatch = await bcrypt.compare(currentPassword, ownerResult.rows[0].password_hash);
+        if (!isMatch) {
+            return res.status(401).json({ error: 'Current password is incorrect.' });
+        }
+
         await pool.query('BEGIN');
         await pool.query('DELETE FROM users WHERE gym_id = $1', [req.user.gym_id]);
         await pool.query('DELETE FROM gyms WHERE id = $1', [req.user.gym_id]);
