@@ -43,14 +43,23 @@ const corsOrigins = (process.env.CORS_ORIGIN || '')
     .filter(Boolean);
 const isProduction = process.env.NODE_ENV === 'production';
 
-const corsOptions = corsOrigins.length > 0
-    ? {
-        origin: (origin, callback) => {
-            if (!origin || corsOrigins.includes(origin)) return callback(null, true);
-            return callback(new Error('Not allowed by CORS'));
-        }
+const defaultDevOrigins = ['http://localhost:5173', 'http://127.0.0.1:5173'];
+
+if (isProduction && corsOrigins.length === 0) {
+    throw new Error('FATAL: CORS_ORIGIN is required in production.');
+}
+
+const corsOptions = {
+    origin: (origin, callback) => {
+        if (!origin) return callback(null, true);
+
+        if (corsOrigins.includes(origin)) return callback(null, true);
+
+        if (!isProduction && defaultDevOrigins.includes(origin)) return callback(null, true);
+
+        return callback(new Error('Not allowed by CORS'));
     }
-    : { origin: true };
+};
 
 // Middleware
 app.use(helmet({

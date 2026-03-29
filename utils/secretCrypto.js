@@ -1,7 +1,10 @@
 const crypto = require('crypto');
 
 const deriveKey = () => {
-    const secret = process.env.JWT_SECRET || '';
+    const secret = process.env.APP_SECRET_ENC_KEY || process.env.JWT_SECRET || '';
+    if (!secret) {
+        throw new Error('APP_SECRET_ENC_KEY (or JWT_SECRET fallback) is required for secret encryption.');
+    }
     return crypto.createHash('sha256').update(secret).digest();
 };
 

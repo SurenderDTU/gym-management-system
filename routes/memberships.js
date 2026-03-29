@@ -353,6 +353,19 @@ router.post('/online/verify', auth, saasMiddleware, async (req, res) => {
             return res.status(400).json({ error: 'Invalid payment signature.' });
         }
 
+        const existingPayment = await pool.query(
+            `SELECT id
+             FROM payments
+             WHERE gym_id = $1
+               AND transaction_id = $2
+               AND deleted_at IS NULL
+             LIMIT 1`,
+            [gym_id, razorpay_payment_id]
+        );
+        if (existingPayment.rows.length > 0) {
+            return res.status(409).json({ error: 'This payment has already been processed.' });
+        }
+
         const result = await activateMembershipTransaction({
             gymId: gym_id,
             memberId: member_id,

@@ -5,10 +5,16 @@ const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const { pool } = require('../config/db');
 
-const fallbackDevPassword = 'admin123';
-const masterPassword = process.env.MASTER_PASSWORD || process.env.SUPERADMIN_PASSWORD || fallbackDevPassword;
-const superadminEnabled = Boolean(masterPassword);
-const disabledMessage = `Superadmin is disabled. Set MASTER_PASSWORD to enable it. Dev fallback is "${fallbackDevPassword}".`;
+const masterPassword = String(process.env.MASTER_PASSWORD || process.env.SUPERADMIN_PASSWORD || '').trim();
+const superadminEnabled = masterPassword.length >= 8;
+const disabledMessage = 'Superadmin is disabled. Set MASTER_PASSWORD (or SUPERADMIN_PASSWORD) with at least 8 characters.';
+
+const securePasswordCompare = (input, expected) => {
+    const a = Buffer.from(String(input || ''), 'utf8');
+    const b = Buffer.from(String(expected || ''), 'utf8');
+    if (a.length !== b.length || a.length === 0) return false;
+    return crypto.timingSafeEqual(a, b);
+};
 
 const toBool = (value) => String(value || '').toLowerCase() === 'true';
 
@@ -102,7 +108,7 @@ router.post('/login', (req, res) => {
 
     const { password } = req.body;
 
-    if (password === masterPassword) {
+    if (securePasswordCompare(password, masterPassword)) {
         const token = jwt.sign({ role: 'SUPER_ADMIN', scope: 'HQ' }, process.env.JWT_SECRET, { expiresIn: '12h' });
         return res.json({ token, message: 'Welcome, Boss.' });
     }
@@ -485,7 +491,7 @@ router.post('/users/:id/reset-password', superAuth, async (req, res) => {
     const userId = parseInt(req.params.id, 10);
     if (!Number.isInteger(userId)) return res.status(400).json({ error: 'Invalid user id' });
 
-    const newPassword = String(req.body.new_password || '').trim() || crypto.randomBytes(6).toString('base64url');
+    const newPassword = String(req.body.new_password || '').trim();
     if (newPassword.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters.' });
 
     try {
@@ -504,7 +510,7 @@ router.post('/users/:id/reset-password', superAuth, async (req, res) => {
             targetLabel: user.rows[0].email,
         });
 
-        return res.json({ message: 'Password reset successfully', new_password: newPassword });
+        return res.json({ message: 'Password reset successfully' });
     } catch (err) {
         console.error('SUPERADMIN USER RESET PASSWORD ERROR:', err.message);
         return res.status(500).json({ error: 'Server Error' });

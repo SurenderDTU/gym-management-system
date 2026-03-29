@@ -538,9 +538,10 @@ const apiOrigin = (import.meta.env.VITE_API_URL || 'http://localhost:5000').trim
       }
 
       try {
-          const orderRes = await axios.post('/api/billing/create-order', {
-              amount: selectedPlan.billed 
-          }, headers);
+            const orderRes = await axios.post('/api/billing/create-order', {
+              plan_tier: selectedPlan.id,
+              cycle: billingCycle,
+            }, headers);
           
           const order = orderRes.data;
 

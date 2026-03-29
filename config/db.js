@@ -16,13 +16,17 @@ const connectDB = async () => {
         await pool.query('SELECT NOW()');
         console.log('✅ Database Connected!');
 
-        // READ THE SQL FILE WE JUST MADE
-        const sqlPath = path.join(__dirname, 'init.sql');
-        const sql = fs.readFileSync(sqlPath, 'utf8');
+        const isProduction = process.env.NODE_ENV === 'production';
+        const runInitOnBoot = String(process.env.RUN_DB_INIT_ON_BOOT || '').toLowerCase() === 'true';
 
-        // RUN THE SQL TO CREATE TABLES
-        await pool.query(sql);
-        console.log('✅ Tables Created (Gyms & Users)!');
+        if (!isProduction || runInitOnBoot) {
+            const sqlPath = path.join(__dirname, 'init.sql');
+            const sql = fs.readFileSync(sqlPath, 'utf8');
+            await pool.query(sql);
+            console.log('✅ Schema initialization completed from init.sql');
+        } else {
+            console.log('ℹ️ Skipping init.sql on boot (production mode). Set RUN_DB_INIT_ON_BOOT=true to enable.');
+        }
 
     } catch (err) {
         console.error('❌ Database Error:', err.message);

@@ -13,16 +13,41 @@ const razorpay = new Razorpay({
     key_secret: process.env.RAZORPAY_KEY_SECRET
 });
 
+const SAAS_PRICING = {
+    monthly: { basic: 999, pro: 1999, elite: 3999 },
+    annual: { basic: 10068, pro: 19992, elite: 39996 },
+};
+
+const normalizeCycle = (value) => String(value || 'monthly').trim().toLowerCase();
+const normalizePlanTier = (value) => String(value || 'pro').trim().toLowerCase();
+
+const resolveSaasPrice = (planTier, cycle) => {
+    const normalizedCycle = normalizeCycle(cycle);
+    const normalizedPlan = normalizePlanTier(planTier);
+    const cycleMap = SAAS_PRICING[normalizedCycle];
+    if (!cycleMap || !Object.prototype.hasOwnProperty.call(cycleMap, normalizedPlan)) {
+        return null;
+    }
+    return { planTier: normalizedPlan, cycle: normalizedCycle, amountInr: cycleMap[normalizedPlan] };
+};
+
 // --- 1. CREATE DYNAMIC SAAS ORDER ---
 router.post('/create-order', auth, async (req, res) => {
     try {
-        // FIX: Now reads the actual amount sent from the frontend!
-        const amountToCharge = req.body.amount ? parseInt(req.body.amount) : 1999;
+        const resolved = resolveSaasPrice(req.body.plan_tier, req.body.cycle);
+        if (!resolved) {
+            return res.status(400).json({ error: 'Invalid plan_tier or cycle.' });
+        }
         
         const options = {
-            amount: amountToCharge * 100, // convert to paise
+            amount: resolved.amountInr * 100,
             currency: "INR",
-            receipt: `master_saas_${req.user.gym_id}_${Date.now()}`,
+            receipt: `master_saas_${req.user.gym_id}_${resolved.planTier}_${resolved.cycle}_${Date.now()}`,
+            notes: {
+                gym_id: String(req.user.gym_id),
+                plan_tier: resolved.planTier,
+                cycle: resolved.cycle,
+            },
         };
 
         const order = await razorpay.orders.create(options);
@@ -36,14 +61,28 @@ router.post('/create-order', auth, async (req, res) => {
 // --- 2. VERIFY & SAVE PLAN ---
 router.post('/verify', auth, async (req, res) => {
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature, plan_tier, cycle } = req.body;
+    const resolved = resolveSaasPrice(plan_tier, cycle);
+    if (!resolved) {
+        return res.status(400).json({ error: 'Invalid plan_tier or cycle.' });
+    }
+
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+        return res.status(400).json({ error: 'Missing payment verification fields.' });
+    }
+
     const sign = razorpay_order_id + "|" + razorpay_payment_id;
     const expectedSign = crypto.createHmac("sha256", process.env.RAZORPAY_KEY_SECRET).update(sign.toString()).digest("hex");
 
     if (razorpay_signature === expectedSign) {
         try {
+            const order = await razorpay.orders.fetch(razorpay_order_id);
+            if (!order || Number(order.amount) !== resolved.amountInr * 100 || String(order.currency || '').toUpperCase() !== 'INR') {
+                return res.status(400).json({ error: 'Order amount/currency mismatch.' });
+            }
+
             await pool.query('BEGIN');
-            const targetPlan = plan_tier || 'pro';
-            const targetCycle = cycle || 'monthly';
+            const targetPlan = resolved.planTier;
+            const targetCycle = resolved.cycle;
             const daysToAdd = targetCycle === 'annual' ? 365 : 30;
 
             await pool.query(

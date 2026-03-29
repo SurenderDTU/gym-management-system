@@ -406,10 +406,14 @@ function SuperAdminDashboard({ token, onLogout }) {
   };
 
   const resetPassword = async (user) => {
-    const typed = window.prompt('Enter new password (min 8 chars). Leave empty to auto-generate:', '');
+    const typed = window.prompt('Enter new password (min 8 chars):', '');
+    if (!typed || typed.trim().length < 8) {
+      alert('Password reset cancelled. Enter at least 8 characters.');
+      return;
+    }
     try {
-      const res = await axios.post(`/api/superadmin/users/${user.id}/reset-password`, { new_password: typed || undefined }, headers);
-      alert(`Password reset successful. New password: ${res.data.new_password}`);
+      await axios.post(`/api/superadmin/users/${user.id}/reset-password`, { new_password: typed.trim() }, headers);
+      alert('Password reset successful.');
       loadLogs();
     } catch (err) {
       handleApiError(err);

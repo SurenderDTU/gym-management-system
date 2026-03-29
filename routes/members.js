@@ -5,10 +5,11 @@ const auth = require('../middleware/authMiddleware');
 const saasMiddleware = require('../middleware/saasMiddleware');
 const multer = require('multer');
 const path = require('path');
+const crypto = require('crypto');
 
 const storage = multer.diskStorage({
-    destination: (req, file, cb) => cb(null, 'uploads/'),
-    filename: (req, file, cb) => cb(null, Date.now() + path.extname(file.originalname))
+    destination: (req, file, cb) => cb(null, 'uploads/profiles/'),
+    filename: (req, file, cb) => cb(null, `member-${req.user.gym_id}-${crypto.randomBytes(12).toString('hex')}${path.extname(file.originalname).toLowerCase()}`)
 });
 
 const allowedImageMimeTypes = new Set(['image/jpeg', 'image/png', 'image/jpg', 'image/webp']);
@@ -25,8 +26,7 @@ const upload = multer({
 });
 
 const buildPicUrl = (filename) => {
-    const base = process.env.SERVER_URL || 'http://localhost:5000';
-    return `${base}/uploads/${filename}`;
+    return `/uploads/profiles/${filename}`;
 };
 
 const normalizePhone = (value) => String(value || '').replace(/\D/g, '');

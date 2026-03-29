@@ -136,7 +136,7 @@ router.get('/stats', auth, saasMiddleware, async (req, res) => {
 router.get('/chart', auth, saasMiddleware, async (req, res) => {
     try {
         const gym_id = req.user.gym_id;
-        const interval = req.query.days === '7' ? '7 days' : '30 days';
+        const days = req.query.days === '7' ? 7 : 30;
 
         const chartData = await pool.query(`
             SELECT
@@ -145,10 +145,10 @@ router.get('/chart', auth, saasMiddleware, async (req, res) => {
             FROM payments
             WHERE gym_id = $1
                             AND deleted_at IS NULL
-              AND payment_date > NOW() - INTERVAL '${interval}'
+              AND payment_date > NOW() - ($2::int * INTERVAL '1 day')
             GROUP BY TO_CHAR(payment_date, 'YYYY-MM-DD')
             ORDER BY date ASC
-        `, [gym_id]);
+        `, [gym_id, days]);
 
         res.json(chartData.rows.map(r => ({ date: r.date, revenue: r.revenue || 0 })));
     } catch (err) {

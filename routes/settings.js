@@ -6,6 +6,7 @@ const auth = require('../middleware/authMiddleware');
 const { requireOwner } = require('../middleware/rbac');
 const multer = require('multer');
 const path = require('path');
+const crypto = require('crypto');
 const twilio = require('twilio');
 const { encryptSecret, decryptSecret } = require('../utils/secretCrypto');
 
@@ -191,7 +192,7 @@ const ensureMemberPaymentsSchema = async () => {
 const storage = multer.diskStorage({
     destination: './uploads/profiles/',
     filename: (req, file, cb) => {
-        cb(null, `profile-${req.user.id}-${Date.now()}${path.extname(file.originalname)}`);
+        cb(null, `profile-${req.user.gym_id}-${req.user.id}-${crypto.randomBytes(12).toString('hex')}${path.extname(file.originalname).toLowerCase()}`);
     }
 });
 
