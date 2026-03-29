@@ -642,7 +642,7 @@ function App() {
 
 
       <div
-        className="flex min-h-[100dvh] font-['Inter'] antialiased text-slate-900"
+        className="flex h-[100dvh] overflow-hidden font-['Inter'] antialiased text-slate-900"
         style={{
           background: `
             radial-gradient(ellipse at 18% 18%, rgba(99,102,241,0.09) 0%, transparent 55%),
@@ -725,7 +725,7 @@ function App() {
           </div>
         </aside>
 
-        <div className="flex-1 flex flex-col min-h-[100dvh] md:h-screen overflow-hidden">
+        <div className="flex-1 flex flex-col h-[100dvh] overflow-hidden">
           <header className="relative z-50 h-16 flex items-center justify-between px-4 md:px-8 shrink-0 border-b bg-white/70 backdrop-blur-3xl">
             <div className="flex items-center gap-2">
               <span className="text-sm font-semibold text-slate-400">Home</span>
@@ -869,7 +869,7 @@ function App() {
             </div>
           </header>
 
-          <main className="flex-1 overflow-y-auto p-4 md:p-6 lg:p-8 pb-24 md:pb-8">
+          <main className="flex-1 overflow-y-auto p-4 md:p-6 lg:p-8 pb-20 md:pb-8">
             <div className="max-w-[1400px] mx-auto w-full">
               {/* 🚨 Passed startTour to Dashboard 🚨 */}
               {currentPage === 'Dashboard'  ? (currentUser?.role === 'OWNER'

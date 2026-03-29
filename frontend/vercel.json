@@ -5,6 +5,10 @@
       "destination": "/index.html"
     },
     {
+      "source": "/hq-admin/(.*)",
+      "destination": "/index.html"
+    },
+    {
       "source": "/((?!.*\\..*).*)",
       "destination": "/index.html"
     }

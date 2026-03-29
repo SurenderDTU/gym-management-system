@@ -49,7 +49,7 @@ const ShimmerBar = ({ className = '' }) => (
 );
 
 const DashboardSkeleton = () => (
-  <div className="min-h-screen p-0 pb-24">
+  <div className="min-h-full p-0 pb-24">
     {animationStyles}
     {/* Hero skeleton */}
     <div className="rounded-[28px] h-40 bg-white/20 backdrop-blur-sm mb-6 overflow-hidden relative">
@@ -941,7 +941,7 @@ const DashboardPage = ({ token, setCurrentPage, toast, navigateTo: navTo, startT
   if (loading) return <DashboardSkeleton />;
 
   return (
-    <div className="min-h-screen pb-28 font-inter relative">
+    <div className="min-h-full pb-28 font-inter relative">
       {animationStyles}
 
       {/* ════════════════════════════════════════

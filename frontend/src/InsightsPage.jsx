@@ -213,11 +213,11 @@ const InsightsPage = ({ token }) => {
     };
   }, [members, attendanceSummary, dateRange]);
 
-  if (loading) return <div className="flex min-h-[100dvh] items-center justify-center text-slate-400 font-bold animate-pulse">Loading Business Intelligence...</div>;
+  if (loading) return <div className="flex min-h-full items-center justify-center text-slate-400 font-bold animate-pulse">Loading Business Intelligence...</div>;
   if (!analytics) return <div className="p-10 text-center text-slate-500 font-bold">No Data Available. Add members to see insights.</div>;
 
   return (
-    <div className="min-h-screen p-0 space-y-8 font-inter text-slate-900">
+    <div className="min-h-full p-0 space-y-8 font-inter text-slate-900">
       
       {/* 1. HEADER */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
